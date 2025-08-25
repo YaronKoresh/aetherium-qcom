@@ -745,9 +745,11 @@ def main():
         create_group_btn.click(create_group_session, inputs=[group_host_ip, group_code_input], outputs=[group_status_box])
         join_group_btn.click(join_group_session, inputs=[group_host_ip, group_code_input], outputs=[group_status_box])
 
-    demo.load(update_logs, None, [log_output, p2p_chat_output, group_chat_output, group_user_list_output], stream_every=1.0)
+        demo.load(update_logs, None, [log_output, p2p_chat_output, group_chat_output, group_user_list_output], stream_every=1.0)
+
     demo.launch()
 
 if __name__ == "__main__":
     main()
+
 
