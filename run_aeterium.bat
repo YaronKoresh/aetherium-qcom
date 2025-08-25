@@ -1,31 +1,76 @@
 @echo off
-REM Aetherium Q-Com Launcher for Windows
-echo Checking for Python installation...
+REM Aetherium Q-Com Launcher for Windows - Fully automatic privilege handling
 
+REM == Argument handler for elevated re-launch ==
+if "%1"=="install_python" goto install_python_logic
+if "%1"=="install_package_admin" goto install_package_as_admin
+
+REM == Main script entry point ==
+echo Checking for Python installation...
 where python >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [ERROR] Python not found in your system's PATH.
-    echo Please install the latest version of Python from python.org
-    echo Make sure to check the box "Add Python to PATH" during installation.
-    pause
-    exit /b 1
+    echo [INFO] Python not found. Administrator privileges are required to install it.
+    goto install_python_prompt
 )
 
 echo Python found.
-echo Installing/Updating Aetherium Q-Com from GitHub...
+goto install_package_standard
 
-python -m pip install --upgrade --force-reinstall git+https://github.com/YaronKoresh/aetherium-qcom.git
-
+:install_python_prompt
+net session >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Installation failed. Please check your internet connection and pip setup.
+    echo [INFO] Requesting administrative privileges...
+    powershell -Command "Start-Process '%~f0' -Verb RunAs -ArgumentList 'install_python'"
+    exit /b
+)
+goto install_python_logic
+
+:install_python_logic
+echo [INFO] Now running as Administrator. Attempting to download and install Python...
+set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.11.5/python-3.11.5-amd64.exe"
+set "INSTALLER_PATH=%TEMP%\python_installer.exe"
+echo Downloading Python 3.11.5 installer...
+powershell -Command "Invoke-WebRequest -Uri '%PYTHON_INSTALLER_URL%' -OutFile '%INSTALLER_PATH%'"
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to download Python installer. Please check your internet connection.
+    pause
+    exit /b 1
+)
+echo Starting Python installation (this may take a few minutes)...
+start /wait %INSTALLER_PATH% /quiet InstallAllUsers=1 PrependPath=1
+del "%INSTALLER_PATH%"
+echo [SUCCESS] Python has been installed.
+echo Please re-run this script to continue with the Aetherium Q-Com installation.
+pause
+exit /b 0
+
+:install_package_standard
+echo Installing/Updating Aetherium Q-Com from GitHub with standard privileges...
+python -m pip install --upgrade --force-reinstall git+https://github.com/YaronKoresh/aetherium-qcom.git
+if %errorlevel% equ 0 (
+    goto install_complete
+)
+echo [INFO] Installation failed, likely due to permissions. Retrying as Administrator...
+powershell -Command "Start-Process '%~f0' -Verb RunAs -ArgumentList 'install_package_admin'"
+exit /b
+
+:install_package_as_admin
+echo Now running as Administrator. Retrying installation...
+python -m pip install --upgrade --force-reinstall git+https://github.com/YaronKoresh/aetherium-qcom.git
+if %errorlevel% neq 0 (
+    echo [ERROR] Installation failed even with administrator privileges.
+    echo Please check your internet connection and pip setup.
     pause
     exit /b 1
 )
 
+:install_complete
 echo Installation complete.
+goto launch_app
+
+:launch_app
 echo Launching Aetherium Q-Com...
 echo.
-
 aetherium-qcom
 
 echo.
