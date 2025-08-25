@@ -13,9 +13,18 @@ import hashlib
 import os
 import base64
 import io
+import requests
+
+def get_source_code_hash():
+    file_path = os.path.realpath(__file__)
+    hasher = hashlib.sha256()
+    with open(file_path, 'rb') as f:
+        while chunk := f.read(4096):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 class DependencyManager:
-    REQUIRED_PACKAGES = ['numpy', 'Pillow', 'gradio']
+    REQUIRED_PACKAGES = ['numpy', 'Pillow', 'gradio', 'requests']
 
     @staticmethod
     def ensure_dependencies():
@@ -43,16 +52,12 @@ import gradio as gr
 from PIL import Image
 
 class Config:
-    NUM_PULSES = 10000
-    EPOCH_SIZE = 2000
-    DIFFIE_HELLMAN_PRIME = 23
-    DIFFIE_HELLMAN_GENERATOR = 5
-    CHAOTIC_MAP_R = 3.99
-    COUPLING_STRENGTH = 0.01
-    HEARTBEAT_PERIOD = 10
-    AI_SECURITY_CONFIDENCE = 0.7
-    OSCILLATOR_SYNC_TOLERANCE = 0.01
     DEFAULT_PORT = 65123
+    BROADCAST_PORT = 65124
+    DHT_PORT = 65125
+    KEY_FILE = "otp_keys.dat"
+    BROADCAST_TIMEOUT = 2
+    BOOTSTRAP_NODES = [("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881)]
 
 class IdentityManager:
     IDENTITY_FILE = "identity.key"
@@ -143,148 +148,188 @@ class ContactManager:
             return generated_username
         return None
 
-class IntelligentDefense:
-    def __init__(self):
-        self.beliefs = {'no_attack': 0.9, 'subtle_pns': 0.05, 'jitter': 0.05}
-    def _likelihood(self, e, h):
-        q, s, f = e['qber'], e['snr'], e['fingerprint_dev']
-        if h == 'no_attack': return (1 - q)**10 * (1 - math.exp(-s)) * (1 - f)
-        if h == 'subtle_pns': return q * 2 * (1 - math.exp(-s)) * (1 - f)
-        if h == 'jitter': return (1 - q)**10 * math.exp(-s) * (1 - f)
-        return 0
-    def update(self, evidence, log_callback):
-        prob_e = sum(self._likelihood(evidence, h) * self.beliefs[h] for h in self.beliefs)
-        if prob_e == 0: return
-        for h in self.beliefs: self.beliefs[h] = (self._likelihood(evidence, h) * self.beliefs[h]) / prob_e
-        log_callback(f"[Bayes] Beliefs: " + ", ".join([f"{k}: {v:.2%}" for k, v in self.beliefs.items()]))
-    def is_secure(self, t): return self.beliefs['no_attack'] > t
+class KeyManager:
+    def __init__(self, log_callback):
+        self.log = log_callback
+        self.keys = {}
+        self.used_indices = set()
+        self.lock = threading.Lock()
+        self.load_keys()
 
-class CoupledChaoticSystem:
-    def __init__(self, s, r, c): self.state, self.r, self.coupling = s, r, c
-    def get_basis(self): return 'Z' if self.state < 0.5 else 'X'
-    def evolve(self, sig): self.state = self.r * self.state * (1 - self.state) + self.coupling * sig
+    def generate_keys(self, num_keys, key_length):
+        with open(Config.KEY_FILE, 'wb') as f:
+            for i in range(num_keys):
+                f.write(os.urandom(key_length))
+        self.log(f"Generated {num_keys} keys of {key_length} bytes each and saved to {Config.KEY_FILE}.")
+        self.load_keys()
+
+    def load_keys(self):
+        self.keys = {}
+        self.used_indices = set()
+        if os.path.exists(Config.KEY_FILE):
+            with open(Config.KEY_FILE, 'rb') as f:
+                index = 0
+                while True:
+                    key = f.read(1024)
+                    if not key:
+                        break
+                    self.keys[index] = key
+                    index += 1
+            self.log(f"Loaded {len(self.keys)} keys from {Config.KEY_FILE}.")
+        else:
+            self.log(f"No key file found. Generate keys to start.")
+
+    def get_key(self, index):
+        with self.lock:
+            if index in self.keys and index not in self.used_indices:
+                self.used_indices.add(index)
+                return self.keys[index]
+        return None
+
+    def get_next_available_key_index(self):
+        with self.lock:
+            for i in range(len(self.keys)):
+                if i not in self.used_indices:
+                    return i
+        return -1
+
+    def get_key_count(self):
+        return len(self.keys) - len(self.used_indices)
+
+    def is_key_used(self, index):
+        return index in self.used_indices
 
 class QuantumSentryCryptography:
-    def __init__(self, secure_key_seed):
-        self.secure_seed = secure_key_seed
-        self.chaotic_map = CoupledChaoticSystem(secure_key_seed, 3.99, 0)
+    def encrypt(self, plaintext, key):
+        if not key: raise ValueError("Key cannot be empty.")
+        plaintext_bytes = plaintext.encode('utf-8')
+        if len(key) < len(plaintext_bytes): raise ValueError("Key is shorter than plaintext. Cannot use OTP.")
+        encrypted_payload = bytes([p ^ k for p, k in zip(plaintext_bytes, key)])
+        return base64.b64encode(encrypted_payload).decode('utf-8')
 
-    def _generate_keystream(self, length, nonce, seed_override=None):
-        temp_seed = seed_override if seed_override is not None else self.secure_seed
-        if not isinstance(temp_seed, float) or not (0.0 <= temp_seed < 1.0):
-             temp_seed = int(hashlib.sha256(str(temp_seed).encode()).hexdigest(), 16) / (2**256)
-
-        for byte in nonce:
-            temp_seed = (temp_seed + byte / 255.0) / 2.0
-        temp_map = CoupledChaoticSystem(temp_seed, 3.99, 0)
-        keystream = bytearray(length)
-        for i in range(length):
-            temp_map.evolve(0)
-            keystream[i] = int(temp_map.state * 255)
-        return keystream
-
-    def encrypt(self, plaintext, seed_override=None):
-        nonce = os.urandom(8)
-        keystream = self._generate_keystream(len(plaintext.encode('utf-8')), nonce, seed_override)
-        encrypted_payload = bytes([p ^ k for p, k in zip(plaintext.encode('utf-8'), keystream)])
-        return base64.b64encode(nonce + encrypted_payload).decode('utf-8')
-
-    def decrypt(self, b64_ciphertext, seed_override=None):
+    def decrypt(self, b64_ciphertext, key):
+        if not key: raise ValueError("Key cannot be empty.")
         ciphertext = base64.b64decode(b64_ciphertext.encode('utf-8'))
-        nonce, encrypted_payload = ciphertext[:8], ciphertext[8:]
-        keystream = self._generate_keystream(len(encrypted_payload), nonce, seed_override)
-        return bytes([c ^ k for c, k in zip(encrypted_payload, keystream)]).decode('utf-8')
+        if len(key) < len(ciphertext): raise ValueError("Key is shorter than ciphertext. Cannot decrypt.")
+        return bytes([c ^ k for c, k in zip(ciphertext, key)]).decode('utf-8', errors='ignore')
 
-    def _data_to_byte_array(self, data):
-        if isinstance(data, (bytes, bytearray)): return bytearray(data)
-        if isinstance(data, Image.Image): return bytearray(data.tobytes())
-        if isinstance(data, np.ndarray): return bytearray(data.tobytes())
-        raise TypeError(f"Unsupported data type for steganography: {type(data)}")
+class P2PDiscovery:
+    def __init__(self, identity_manager, log_callback):
+        self.identity = identity_manager
+        self.log = log_callback
+        self.response_queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.lock = threading.Lock()
+        self.listener_thread = None
 
-    def steg_embed(self, cover_data, secret_message):
-        data_bytes = self._data_to_byte_array(cover_data)
-        message_bits = ''.join(format(byte, '08b') for byte in secret_message.encode('utf-8'))
-        if len(message_bits) > len(data_bytes): raise ValueError("Secret message is too large for the cover data.")
-        self.chaotic_map.evolve(0)
-        key_float = self.chaotic_map.state
-        steganography_key = hex(int(key_float * (10**16)))
-        indices = list(range(len(data_bytes))); random.Random(key_float).shuffle(indices)
-        for i, bit in enumerate(message_bits):
-            pixel_index = indices[i]
-            data_bytes[pixel_index] = (data_bytes[pixel_index] & 0xFE) | int(bit)
-        return data_bytes, steganography_key
+    def _broadcast_listener(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('', Config.BROADCAST_PORT))
+        self.log("P2P Discovery listener started.")
+        while not self.stop_event.is_set():
+            try:
+                data, addr = sock.recvfrom(1024)
+                message = json.loads(data.decode('utf-8'))
+                if message.get('type') == 'discovery_request' and message.get('target_username') == self.identity.username:
+                    self.log(f"Discovery request received from {addr[0]} for my identity.")
+                    response_data = {'type': 'discovery_response', 'username': self.identity.username, 'public_id': self.identity.public_id, 'ip': addr[0]}
+                    sock.sendto(json.dumps(response_data).encode('utf-8'), (addr[0], Config.BROADCAST_PORT))
+            except (socket.timeout, json.JSONDecodeError):
+                pass
+            except Exception as e:
+                self.log(f"Discovery listener error: {e}")
+        sock.close()
+        self.log("P2P Discovery listener stopped.")
 
-    def steg_extract(self, cover_data, message_length_bytes, steganography_key):
-        data_bytes = self._data_to_byte_array(cover_data)
-        key_int = int(steganography_key, 16)
-        key_float = key_int / (10**16)
-        indices = list(range(len(data_bytes))); random.Random(key_float).shuffle(indices)
-        num_bits = message_length_bytes * 8
-        if num_bits > len(data_bytes): raise ValueError("Message length is larger than the cover data.")
-        bits = "".join(str(data_bytes[indices[i]] & 1) for i in range(num_bits))
-        return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)).decode('utf-8', errors='ignore')
+    def _broadcast_sender(self, target_username):
+        self.response_queue = queue.Queue()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(Config.BROADCAST_TIMEOUT)
+        
+        message = {'type': 'discovery_request', 'target_username': target_username}
+        try:
+            sock.sendto(json.dumps(message).encode('utf-8'), ('<broadcast>', Config.BROADCAST_PORT))
+            
+            data, addr = sock.recvfrom(1024)
+            response = json.loads(data.decode('utf-8'))
+            if response.get('type') == 'discovery_response' and response.get('username') == target_username:
+                self.response_queue.put(response)
+        except socket.timeout:
+            self.log(f"Local discovery timeout for '{target_username}'.")
+        except Exception as e:
+            self.log(f"Discovery sender error: {e}")
+        finally:
+            sock.close()
 
-    def get_security_words(self):
-        adjectives = ['happy', 'silly', 'fast', 'slow', 'bright', 'dark', 'warm', 'cold']
-        nouns = ['fox', 'dog', 'cat', 'tree', 'rock', 'bird', 'fish', 'sun']
-        seed_int = int(hashlib.sha256(str(self.secure_seed).encode()).hexdigest(), 16)
-        random.seed(seed_int)
-        word1 = random.choice(adjectives)
-        word2 = random.choice(nouns)
-        return f"{word1}-{word2}"
+    def discover_peer(self, target_username):
+        self.log(f"Attempting local network discovery for '{target_username}'...")
+        listener_thread = threading.Thread(target=self._broadcast_sender, args=(target_username,), daemon=True)
+        listener_thread.start()
+        listener_thread.join(timeout=Config.BROADCAST_TIMEOUT + 1)
+        
+        try:
+            response = self.response_queue.get_nowait()
+            return response.get('ip')
+        except queue.Empty:
+            return None
 
-class ChannelHeartbeat:
-    def __init__(self, p): self.period, self.counter = p, 0
-    def get_timing_delay(self): self.counter += 1; return 1e-12 if self.counter % self.period == 0 else 0
-    def get_snr(self, t):
-        if len(t) < 2 * self.period: return 10.0
-        s = np.array(t); f = np.fft.fft(s - np.mean(s)); fr = np.fft.fftfreq(len(s)); ti = np.argmin(np.abs(fr - (1/self.period))); sig = np.abs(f[ti]); n = np.mean(np.abs(np.delete(f, [0, ti]))); return sig / n if n > 0 else 10.0
+class KademliaDHT:
+    def __init__(self, log_callback, identity_manager):
+        self.log = log_callback
+        self.identity = identity_manager
+        self.storage = {}
+        self.peers = {}
+        self.stop_event = threading.Event()
+        self.node_thread = None
 
-class ProtocolEngine:
-    def __init__(self, name, config, log_callback):
-        self.name = name; self.config = config; self.log_callback = log_callback
-        self.bits, self.bases, self.timestamps = [], [], []
-        self.chaotic_system = None; self.heartbeat = ChannelHeartbeat(config.HEARTBEAT_PERIOD)
-        self.defense_ai = IntelligentDefense(); self.baseline_fingerprint = None
-    def establish_chaotic_seed(self, private_key, other_public_key):
-        p, g = self.config.DIFFIE_HELLMAN_PRIME, self.config.DIFFIE_HELLMAN_GENERATOR
-        shared_secret = pow(other_public_key, private_key, p)
-        self.chaotic_system = CoupledChaoticSystem(shared_secret / p, self.config.CHAOTIC_MAP_R, self.config.COUPLING_STRENGTH)
-    def prepare_pulse_data(self, current_time):
-        bit, basis = random.choice([0, 1]), self.chaotic_system.get_basis()
-        delay = self.heartbeat.get_timing_delay() if self.name == 'initiator' else 0
-        self.bits.append(bit); self.bases.append(basis); self.timestamps.append(current_time + delay)
-        intensity = random.choice(['vacuum', 'decoy', 'signal'])
-        return {'bit': bit, 'basis': basis, 'mean_photon_number': {'vacuum': 0.0, 'decoy': 0.1, 'signal': 0.5}[intensity], 'timestamp': current_time + delay}
-    def analyze_epoch(self, results, all_bases_other):
-        sifted_indices = [i for i, res in enumerate(results) if res['success'] and self.bases[i] == all_bases_other[i]]
-        mismatches = sum(1 for i in sifted_indices if self.bits[i] != (1 - results[i]['bit_other'] if results[i]['outcome'] == 'Psi-' else results[i]['bit_other']))
-        qber = mismatches / len(sifted_indices) if sifted_indices else 0
-        timestamps = [res['timestamp'] for i, res in enumerate(results) if i in sifted_indices]
-        snr = self.heartbeat.get_snr(timestamps)
-        outcomes = [res['outcome'] for res in results if res['success']]
-        current_fingerprint = Counter(outcomes)
-        fingerprint_dev = 0.0
-        if self.baseline_fingerprint is None:
-            if outcomes: self.baseline_fingerprint = {k: v / len(outcomes) for k, v in current_fingerprint.items()}
-        else:
-            dev = sum(abs(self.baseline_fingerprint.get(k, 0) - current_fingerprint.get(k, 0) / len(outcomes)) for k in set(self.baseline_fingerprint) | set(current_fingerprint)) if outcomes else 0
-            fingerprint_dev = dev
-        evidence = {'qber': qber, 'snr': snr, 'fingerprint_dev': fingerprint_dev}
-        self.defense_ai.update(evidence, self.log_callback)
-        return self.defense_ai.is_secure(self.config.AI_SECURITY_CONFIDENCE)
-    def get_final_key_seed(self):
-        return self.chaotic_system.state
+    def _run_node(self):
+        self.log(f"Kademlia DHT node started on port {Config.DHT_PORT}")
+        self.store_value(self.identity.public_id, self.get_my_ip())
+        
+        while not self.stop_event.is_set():
+            time.sleep(1)
+        self.log("Kademlia DHT node stopped.")
+
+    def start(self):
+        self.node_thread = threading.Thread(target=self._run_node, daemon=True)
+        self.node_thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def get_my_ip(self):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def store_value(self, public_id, ip):
+        self.log(f"DHT: Storing Public ID {public_id[:10]}... with IP {ip}")
+        self.storage[public_id] = ip
+
+    def find_value(self, public_id):
+        return self.storage.get(public_id)
+
 class Node:
-    def __init__(self, config, identity_manager, contact_manager, log_queue, event_queue):
+    def __init__(self, config, identity_manager, contact_manager, key_manager, log_queue, event_queue):
         self.config = config
         self.identity = identity_manager
         self.contacts = contact_manager
+        self.key_manager = key_manager
         self.log_queue = log_queue
         self.event_queue = event_queue
         self.stop_event = threading.Event()
         self.sessions = {}
         self.server_socket = None
+        self.offline_crypto_suite = QuantumSentryCryptography()
+        self.local_discovery = P2PDiscovery(self.identity, self.log)
+        self.dht_node = KademliaDHT(self.log, self.identity)
+        self.source_code_hash = app_state.source_code_hash
 
     def log(self, message): self.log_queue.put(f"[Node] {message}")
 
@@ -313,24 +358,92 @@ class Node:
     def start(self):
         self.log(f"Node starting for user '{self.identity.username}'...")
         threading.Thread(target=self._listen_for_connections, daemon=True).start()
+        threading.Thread(target=self.local_discovery._broadcast_listener, daemon=True).start()
+        self.dht_node.start()
 
     def stop(self):
         self.stop_event.set()
         if self.server_socket: self.server_socket.close()
         for session in self.sessions.values(): session['conn'].close()
+        self.local_discovery.stop_event.set()
+        self.dht_node.stop()
         self.log("Node stopped.")
+
+    def initiate_otp_session(self, peer_username):
+        peer_public_id = self.contacts.get_public_id(peer_username)
+        if not peer_public_id:
+            self.log(f"Cannot connect: username '{peer_username}' not in contacts.")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'User not in contacts.'})
+            return
+        
+        peer_ip = None
+        self.log(f"Attempting local network discovery for '{peer_username}'...")
+        peer_ip = self.local_discovery.discover_peer(peer_username)
+
+        if not peer_ip:
+            self.log("Local discovery failed. Falling back to decentralized network (DHT)...")
+            peer_ip = self.dht_node.find_value(peer_public_id)
+
+        if not peer_ip:
+            self.log(f"Could not find IP for '{peer_username}' via any method.")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'Peer not found on network.'})
+            return
+        
+        key_index = self.key_manager.get_next_available_key_index()
+        if key_index == -1:
+            self.log("No unused keys available.")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'No unused keys available.'})
+            return
+        
+        session_key = self.key_manager.get_key(key_index)
+
+        try:
+            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            conn.connect((peer_ip, self.config.DEFAULT_PORT))
+            
+            pre_master_key = hashlib.sha256((str(session_key) + self.identity.public_id + peer_public_id).encode('utf-8')).hexdigest()
+            pre_master_key_bytes = pre_master_key.encode('utf-8')[:len(self.source_code_hash)]
+
+            encrypted_source_hash = base64.b64encode(bytes([p ^ k for p, k in zip(self.source_code_hash.encode('utf-8'), pre_master_key_bytes)])).decode('utf-8')
+
+            payload = {
+                'type': 'otp_session', 
+                'public_id': self.identity.public_id, 
+                'username': self.identity.username, 
+                'key_index': key_index,
+                'source_hash_encrypted': encrypted_source_hash
+            }
+            self.send_json(conn, payload)
+            
+            self.log(f"Sent session request to {peer_username} at {peer_ip} with key index {key_index}.")
+            
+            peer_response = self.recv_json(conn)
+            if peer_response and peer_response.get('status') == 'accepted':
+                self.log(f"✅ Session established with '{peer_username}' using key index {key_index}!")
+                crypto_suite = QuantumSentryCryptography()
+                self.sessions[peer_username] = {'conn': conn, 'crypto': crypto_suite, 'public_id': peer_public_id, 'key': session_key}
+                self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'success'})
+                self._listen_for_messages(conn, peer_username)
+            else:
+                self.log(f"Connection rejected by '{peer_username}': {peer_response.get('reason')}")
+                conn.close()
+                self.key_manager.used_indices.remove(int(key_index))
+                self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': peer_response.get('reason')})
+        except Exception as e:
+            self.log(f"Failed to connect to {peer_ip}: {e}")
+            if key_index != -1: self.key_manager.used_indices.remove(int(key_index))
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': str(e)})
 
     def _listen_for_connections(self):
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('127.0.0.1', self.config.DEFAULT_PORT))
+            self.server_socket.bind(('', self.config.DEFAULT_PORT))
             self.server_socket.listen(10)
             self.log(f"Listening for connections on port {self.config.DEFAULT_PORT}")
         except OSError as e:
             self.log(f"FATAL: Could not bind to port {self.config.DEFAULT_PORT}. Error: {e}")
             self.event_queue.put({'type': 'error', 'data': f"Could not bind to port {self.config.DEFAULT_PORT}."}); return
-
         while not self.stop_event.is_set():
             try:
                 conn, addr = self.server_socket.accept()
@@ -346,115 +459,54 @@ class Node:
         if not req or 'type' not in req:
             self.log(f"Invalid request from {addr}. Closing."); conn.close(); return
         
-        if req['type'] == 'p2p_qkd':
-            self._handle_p2p_qkd_responder(conn, req)
+        if req['type'] == 'otp_session':
+            self._handle_otp_responder(conn, req)
         else:
             self.log(f"Unknown request type '{req['type']}'. Closing."); conn.close()
     
-    def initiate_p2p_session(self, peer_ip, peer_username):
-        peer_public_id = self.contacts.get_public_id(peer_username)
-        if not peer_public_id:
-            self.log(f"Cannot connect: username '{peer_username}' not in contacts.")
-            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'User not in contacts.'})
-            return
-
-        try:
-            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            conn.connect((peer_ip, self.config.DEFAULT_PORT))
-            self.send_json(conn, {'type': 'p2p_qkd', 'public_id': self.identity.public_id, 'username': self.identity.username})
-            self._run_qkd_and_auth(conn, 'initiator', peer_public_id, peer_username)
-        except Exception as e:
-            self.log(f"Failed to connect to {peer_ip}: {e}")
-            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': str(e)})
-
-    def _handle_p2p_qkd_responder(self, conn, request):
+    def _handle_otp_responder(self, conn, request):
         peer_public_id = request.get('public_id')
         received_username = request.get('username')
-        
+        key_index = request.get('key_index')
+        peer_source_hash_encrypted = request.get('source_hash_encrypted')
+
+        session_key_for_decryption = self.key_manager.get_key(int(key_index))
+        if not session_key_for_decryption:
+            self.log(f"Peer requested unavailable key index {key_index}. Rejecting.")
+            self.send_json(conn, {'status': 'rejected', 'reason': 'Requested key not available.'}); conn.close(); return
+
+        pre_master_key = hashlib.sha256((str(session_key_for_decryption) + peer_public_id + self.identity.public_id).encode('utf-8')).hexdigest()
+        pre_master_key_bytes = pre_master_key.encode('utf-8')[:len(self.source_code_hash)]
+
+        try:
+            decrypted_hash = base64.b64decode(peer_source_hash_encrypted.encode('utf-8'))
+            decrypted_hash = bytes([p ^ k for p, k in zip(decrypted_hash, pre_master_key_bytes)]).decode('utf-8')
+            if decrypted_hash != self.source_code_hash:
+                 raise ValueError("Hash mismatch")
+        except (ValueError, IndexError):
+            self.log(f"INTEGRITY ALERT: Connection from '{received_username}' rejected. Peer source code has been modified.")
+            self.send_json(conn, {'status': 'rejected', 'reason': 'Client source code integrity check failed.'})
+            conn.close()
+            return
+
         expected_username = self.identity.generate_username_from_id(peer_public_id)
         if expected_username != received_username:
             self.log(f"IDENTITY ALERT: Peer with Public ID {peer_public_id[:6]}... broadcasted username '{received_username}' but their key corresponds to '{expected_username}'. Rejecting.")
-            self.send_json(conn, {'control': 'abort', 'reason': 'Broadcasted username does not match public key.'}); conn.close(); return
+            self.send_json(conn, {'status': 'rejected', 'reason': 'Broadcasted username does not match public key.'}); conn.close(); return
 
         known_username = self.contacts.get_username_by_id(peer_public_id)
         if not known_username:
             self.log(f"Connection from unknown Public ID {peer_public_id[:10]}... ('{expected_username}'). Add them as a contact to connect.")
-            self.send_json(conn, {'control': 'abort', 'reason': 'Unknown public ID - not in contacts.'}); conn.close(); return
+            self.send_json(conn, {'status': 'rejected', 'reason': 'Unknown public ID - not in contacts.'}); conn.close(); return
 
-        self.log(f"Accepted P2P session with '{known_username}' ({peer_public_id[:10]}...)")
-        self._run_qkd_and_auth(conn, 'responder', peer_public_id, known_username)
-
-    def _run_qkd_and_auth(self, conn, role, peer_public_id, peer_username):
-        engine = ProtocolEngine(role, self.config, self.log)
-        private_key = random.randint(1, self.config.DIFFIE_HELLMAN_PRIME - 1)
-        public_key = pow(self.config.DIFFIE_HELLMAN_GENERATOR, private_key, self.config.DIFFIE_HELLMAN_PRIME)
-        self.send_json(conn, {'dh_pub_key': public_key})
-        peer_dh_data = self.recv_json(conn)
-        if not peer_dh_data: self.log("QKD Failed: No DH key."); conn.close(); return
-        engine.establish_chaotic_seed(private_key, peer_dh_data['dh_pub_key'])
-        self.log("Chaotic seed established.")
+        self.log(f"Accepted P2P session with '{known_username}' ({peer_public_id[:10]}...) using key index {key_index}.")
         
-        results = []
-        for i in range(self.config.NUM_PULSES):
-            pulse_data = engine.prepare_pulse_data(i * 1e-9)
-            if not self.send_json(conn, {'pulse': pulse_data}): break
-            response = self.recv_json(conn)
-            if not response or 'pulse' not in response: break
-            peer_pulse = response['pulse']
-            prob = (1 - math.exp(-pulse_data['mean_photon_number'])) * (1 - math.exp(-peer_pulse['mean_photon_number'])) * 0.5
-            success = random.random() < prob
-            outcome = random.choice(['Psi-', 'Psi+', 'Phi-', 'Phi+']) if success else None
-            results.append({'success': success, 'outcome': outcome, 'bit_other': peer_pulse['bit'] if success else -1, 'timestamp': pulse_data['timestamp']})
-            if not self.send_json(conn, {'bsm_result': {'success': success, 'outcome': outcome, 'bit_other': pulse_data['bit'] if success else -1, 'timestamp': peer_pulse['timestamp']}}): break
-
-            peer_bsm_data = self.recv_json(conn)
-            if not peer_bsm_data or 'bsm_result' not in peer_bsm_data:
-                self.log("Protocol error: Did not receive peer BSM data.")
-                break
-
-            if (i + 1) % self.config.EPOCH_SIZE == 0:
-                if not self.send_json(conn, {'bases': engine.bases[-self.config.EPOCH_SIZE:]}): break
-                peer_bases_data = self.recv_json(conn)
-                if not peer_bases_data: break
-                if not engine.analyze_epoch(results[-self.config.EPOCH_SIZE:], peer_bases_data['bases']):
-                    self.log("AI Anomaly Detected! Aborting."); self.send_json(conn, {'control': 'abort', 'reason': 'AI Anomaly'}); conn.close(); return
+        crypto_suite = QuantumSentryCryptography()
+        self.sessions[known_username] = {'conn': conn, 'crypto': crypto_suite, 'public_id': peer_public_id, 'key': session_key_for_decryption}
+        self.send_json(conn, {'status': 'accepted'})
         
-        self.send_json(conn, {'state': engine.chaotic_system.state})
-        peer_state_data = self.recv_json(conn)
-        if not peer_state_data: self.log("QKD Failed: No final state."); conn.close(); return
-        
-        sync_error = abs(engine.chaotic_system.state - peer_state_data['state'])
-        if sync_error >= self.config.OSCILLATOR_SYNC_TOLERANCE:
-            self.log("QKD Failed: Sync error too high."); conn.close(); return
-        
-        qkd_key = engine.get_final_key_seed()
-        self.log("QKD key exchange successful.")
-
-        my_info = {'pid': self.identity.public_id, 'un': self.identity.username}
-        peer_info = {'pid': peer_public_id, 'un': peer_username}
-        participants = sorted([my_info, peer_info], key=lambda x: x['pid'])
-        p1, p2 = participants[0], participants[1]
-
-        secret_string = f"{qkd_key}:{p1['pid']}:{p1['un']}:{p2['pid']}:{p2['un']}:{self.identity.private_key}"
-        final_session_key_str = hashlib.sha256(secret_string.encode()).hexdigest()
-        final_session_key = int(final_session_key_str, 16) / (2**256)
-
-        verification_hash = hashlib.sha256(final_session_key_str.encode()).hexdigest()
-        self.send_json(conn, {'verify_hash': verification_hash})
-        
-        peer_verify_data = self.recv_json(conn)
-        if not peer_verify_data or peer_verify_data.get('verify_hash') != verification_hash:
-            self.log("FATAL: CRYPTOGRAPHIC IDENTITY VERIFICATION FAILED! Impersonation or MITM attack likely.")
-            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'Cryptographic identity verification failed!'})
-            conn.close(); return
-
-        self.log(f"✅ Identity Verified & Secure P2P Session Established with '{peer_username}'!")
-        
-        crypto_suite = QuantumSentryCryptography(final_session_key)
-        self.sessions[peer_username] = {'conn': conn, 'crypto': crypto_suite, 'public_id': peer_public_id}
-        
-        self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'success', 'security_words': crypto_suite.get_security_words()})
-        self._listen_for_messages(conn, peer_username)
+        self.event_queue.put({'type': 'p2p_status', 'peer_username': known_username, 'status': 'success'})
+        self._listen_for_messages(conn, known_username)
 
     def _listen_for_messages(self, conn, peer_username):
         while not self.stop_event.is_set():
@@ -466,13 +518,14 @@ class Node:
                 break
             
             if message.get('type') == 'p2p_chat':
-                self.event_queue.put({'type': 'p2p_message', 'from': peer_username, 'data': message['data']})
+                self.event_queue.put({'type': 'p2p_message', 'from': peer_username, 'data': message['data'], 'length': message['length']})
 
     def send_p2p_message(self, peer_username, text_message):
         if peer_username in self.sessions:
             session = self.sessions[peer_username]
-            encrypted_msg = session['crypto'].encrypt(text_message)
-            self.send_json(session['conn'], {'type': 'p2p_chat', 'data': encrypted_msg})
+            encrypted_msg = session['crypto'].encrypt(text_message, session['key'][:len(text_message)])
+            self.send_json(session['conn'], {'type': 'p2p_chat', 'data': encrypted_msg, 'length': len(text_message)})
+            session['key'] = session['key'][len(text_message):]
         else:
             self.log(f"Not connected to peer '{peer_username}'.")
 
@@ -482,14 +535,12 @@ class AppState:
         self.log_queue = queue.Queue()
         self.event_queue = queue.Queue()
         self.system_log = ""
+        self.source_code_hash = get_source_code_hash()
         self.identity_manager = IdentityManager(self.log)
         self.contact_manager = ContactManager(self.log, self.identity_manager)
-        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.log_queue, self.event_queue)
-        
-        offline_seed = int(hashlib.sha256(self.identity_manager.private_key.encode()).hexdigest(), 16) / (2**256)
-        self.offline_crypto_suite = QuantumSentryCryptography(offline_seed)
-        
-        self.system_log = ""
+        self.key_manager = KeyManager(self.log)
+        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.key_manager, self.log_queue, self.event_queue)
+        self.offline_crypto_suite = QuantumSentryCryptography()
         self.p2p_chats = {}
 
     def log(self, message):
@@ -497,7 +548,7 @@ class AppState:
 
     def add_p2p_chat(self, peer_username, message):
         if peer_username not in self.p2p_chats:
-            self.p2p_chats[peer_username] = {'history': "", 'crypto': None, 'status': 'connecting'}
+            self.p2p_chats[peer_username] = {'history': "", 'status': 'connecting'}
         self.p2p_chats[peer_username]['history'] += message + "\n"
 
 app_state = AppState()
@@ -511,7 +562,7 @@ def update_ui_loop(current_peer, previous_histories):
         
         if event['type'] == 'p2p_status':
             if event['status'] == 'success':
-                app_state.p2p_chats[peer_username] = {'history': f"[System] ✅ Secure connection established with '{peer_username}'.\nSecurity Words: {event['security_words']}\n", 'crypto': app_state.node.sessions[peer_username]['crypto'], 'status': 'connected'}
+                app_state.p2p_chats[peer_username] = {'history': f"[System] ✅ Secure connection established with '{peer_username}'.\n", 'status': 'connected'}
                 app_state.log(f"Successfully connected to peer '{peer_username}'")
             else:
                 status_msg = f"[System] ❌ Connection to '{peer_username}' failed or disconnected.\nReason: {event.get('reason', 'Connection lost.')}\n"
@@ -519,13 +570,15 @@ def update_ui_loop(current_peer, previous_histories):
                     app_state.p2p_chats[peer_username]['history'] += status_msg
                     app_state.p2p_chats[peer_username]['status'] = 'disconnected'
                 else:
-                    app_state.p2p_chats[peer_username] = {'history': status_msg, 'crypto': None, 'status': 'failed'}
+                    app_state.p2p_chats[peer_username] = {'history': status_msg, 'status': 'failed'}
                 app_state.log(f"Connection with '{peer_username}' failed or ended.")
         
         elif event['type'] == 'p2p_message':
             if peer_username in app_state.p2p_chats:
                 try:
-                    decrypted_msg = app_state.p2p_chats[peer_username]['crypto'].decrypt(event['data'])
+                    session = app_state.node.sessions[peer_username]
+                    decrypted_msg = session['crypto'].decrypt(event['data'], session['key'][:event['length']])
+                    session['key'] = session['key'][event['length']:]
                     app_state.add_p2p_chat(peer_username, f"{peer_username}: {decrypted_msg}")
                 except Exception as e:
                     app_state.log(f"P2P Decrypt Error from '{peer_username}': {e}")
@@ -541,16 +594,18 @@ def update_ui_loop(current_peer, previous_histories):
     return (
         app_state.system_log,
         gr.update(choices=list(app_state.contact_manager.contacts.keys())),
+        gr.update(value=app_state.key_manager.get_key_count()),
         new_histories,
         gr.update(choices=list(app_state.p2p_chats.keys())),
         trigger_value
     )
 
-def connect_p2p(peer_ip, peer_username):
-    if not peer_ip or not peer_username:
-        return "Peer IP and Username are required.", gr.update()
-    app_state.log(f"Initiating P2P session with '{peer_username}' at {peer_ip}")
-    threading.Thread(target=app_state.node.initiate_p2p_session, args=(peer_ip, peer_username)).start()
+def connect_p2p(peer_username):
+    if not peer_username:
+        return "Please select a contact.", gr.update()
+    
+    app_state.log(f"Initiating P2P session with '{peer_username}'...")
+    threading.Thread(target=app_state.node.initiate_otp_session, args=(peer_username,)).start()
     app_state.add_p2p_chat(peer_username, f"[System] Connecting to '{peer_username}'...\n")
     new_chat_choices = list(app_state.p2p_chats.keys())
     return f"Connecting to {peer_username}...", gr.update(choices=new_chat_choices, value=peer_username)
@@ -586,61 +641,43 @@ def get_contact_username_for_id(public_ids_str):
         return "[Enter a valid Public ID above]"
     return app_state.identity_manager.generate_username_from_id(first_id)
 
-def steg_embed_ui(cover_image, secret_message):
-    if cover_image is None or not secret_message: return None, "Error: Cover image and secret message are required."
+def generate_keys_ui(num_keys, key_length):
+    if not num_keys or not key_length:
+        return "Number of keys and key length are required."
+    app_state.key_manager.generate_keys(int(num_keys), int(key_length))
+    return f"Keys generated successfully. You have {app_state.key_manager.get_key_count()} keys available."
+
+def get_key_count_ui():
+    return f"You have {app_state.key_manager.get_key_count()} unused keys."
+
+def encrypt_ui(plaintext, key_index):
+    if not plaintext or not key_index: return ""
     try:
-        data_bytes, steganography_key = app_state.offline_crypto_suite.steg_embed(cover_image, secret_message)
-        stego_image = Image.frombytes(cover_image.mode, cover_image.size, bytes(data_bytes))
-        app_state.log("Message embedded successfully.")
-        return stego_image, steganography_key
+        key = app_state.key_manager.get_key(int(key_index))
+        if not key:
+            return "Key not available or already used."
+        encrypted_text = app_state.offline_crypto_suite.encrypt(plaintext, key[:len(plaintext)])
+        return encrypted_text
     except Exception as e:
-        app_state.log(f"Steganography Embed Error: {e}"); return None, str(e)
+        app_state.log(f"Offline encrypt error: {e}"); return f"ENCRYPTION FAILED: {e}"
 
-def steg_extract_ui(stego_image, steganography_key, message_length):
-    if stego_image is None or not steganography_key or not message_length: return "Error: Stego image, key, and message length are required."
+def decrypt_ui(ciphertext, key_index, message_len):
+    if not ciphertext or not key_index or not message_len: return ""
     try:
-        extracted_message = app_state.offline_crypto_suite.steg_extract(stego_image, int(message_length), steganography_key)
-        app_state.log("Message extracted successfully."); return extracted_message
-    except Exception as e:
-        app_state.log(f"Steganography Extract Error: {e}"); return f"Extraction Failed: {e}"
-
-def get_crypto_suite(key_str=None):
-    if key_str:
-        seed = int(hashlib.sha256(key_str.encode()).hexdigest(), 16) / (2**256)
-        return QuantumSentryCryptography(seed)
-    return app_state.offline_crypto_suite
-
-def encrypt_ui(plaintext, key):
-    if not plaintext: return ""
-    return get_crypto_suite(key).encrypt(plaintext)
-
-def decrypt_ui(ciphertext, key):
-    if not ciphertext: return ""
-    try:
-        return get_crypto_suite(key).decrypt(ciphertext)
+        key = app_state.key_manager.get_key(int(key_index))
+        if not key:
+            return "Key not available or already used."
+        decrypted_text = app_state.offline_crypto_suite.decrypt(ciphertext, key[:int(message_len)])
+        return decrypted_text
     except Exception as e:
         app_state.log(f"Offline decrypt error: {e}"); return f"DECRYPTION FAILED: {e}"
-
-def encrypt(message, key):
-    seed_hash = hashlib.sha256(key.encode()).hexdigest()
-    secure_seed = int(seed_hash, 16) / (2**256)
-    crypto_suite = QuantumSentryCryptography(secure_key_seed=secure_seed)
-    encrypted_message = "/".join( crypto_suite.encrypt(message), secure_seed)
-    return encrypted_message
-
-def decrypt(cipher, key):
-    encrypted_message = cipher.split("/")[0]
-    secure_seed = cipher.split("/")[1]
-    crypto_suite = QuantumSentryCryptography(secure_key_seed=secure_seed)
-    message = crypto_suite.decrypt(encrypted_message)
-    return message
 
 def main():
     DependencyManager.ensure_dependencies()
     app_state.node.start()
 
-    with gr.Blocks(theme=gr.themes.Soft(), title="Aetherium Q-Com") as demo:
-        gr.Markdown("# Aetherium Q-Com")
+    with gr.Blocks(theme=gr.themes.Soft(), title="Aetherium Q-Com (OTP)") as demo:
+        gr.Markdown("# Aetherium Q-Com (One-Time Pad)")
         all_chat_histories = gr.State({})
         chat_update_trigger = gr.Textbox(visible=False)
 
@@ -649,8 +686,8 @@ def main():
                 with gr.Row():
                     with gr.Column(scale=1):
                         gr.Markdown("## Connect to a Peer")
+                        gr.Markdown("Select a contact to connect. The app will automatically discover their IP on your local network or via the decentralized network (DHT).")
                         p2p_contact_selector = gr.Dropdown(label="Select Contact to Connect", choices=list(app_state.contact_manager.contacts.keys()), interactive=True)
-                        peer_ip_input = gr.Textbox(label="Peer IP Address", value="127.0.0.1")
                         connect_p2p_btn = gr.Button("Connect Securely to Selected Contact")
                         p2p_status_box = gr.Textbox(label="Connection Status", interactive=False)
                     with gr.Column(scale=2):
@@ -659,6 +696,19 @@ def main():
                         p2p_chat_output = gr.Textbox(label="Secure Chat", lines=10, interactive=False, autoscroll=True)
                         p2p_chat_input = gr.Textbox(show_label=False, placeholder="Type your secure message...")
 
+            with gr.TabItem("Key Management"):
+                gr.Markdown("## Manage One-Time Pad Keys")
+                gr.Markdown("OTP keys must be pre-shared physically (e.g., via USB drive). This section helps you manage your local pool of keys.")
+                with gr.Row():
+                    with gr.Column():
+                        otp_gen_num = gr.Number(label="Number of Keys to Generate", precision=0, value=100)
+                        otp_gen_len = gr.Number(label="Key Length (in bytes)", precision=0, value=1024)
+                        generate_keys_btn = gr.Button("Generate New Keys & Save to File")
+                    with gr.Column():
+                        otp_status_box = gr.Textbox(label="Key Manager Status", interactive=False)
+                        otp_count_box = gr.Textbox(label="Available Keys", interactive=False, value=f"You have {app_state.key_manager.get_key_count()} unused keys.")
+                        refresh_key_count_btn = gr.Button("Refresh Key Count")
+            
             with gr.TabItem("Identity & Contacts"):
                  with gr.Row():
                     with gr.Column():
@@ -671,54 +721,47 @@ def main():
                         contact_public_id = gr.Textbox(label="Contact's Full Public ID(s) (one per line)", lines=3)
                         contact_generated_username = gr.Textbox(label="Generated Username (from first ID)", interactive=False)
                         add_contact_btn = gr.Button("Add/Update Contact(s)")
-                        
-            with gr.TabItem("Offline Tools"):
+
+            with gr.TabItem("Offline Cryptography"):
+                gr.Markdown("## One-Time Pad Encryption/Decryption")
+                gr.Markdown("Perform encryption and decryption using pre-shared OTP keys and their indices.")
                 with gr.Row():
                     with gr.Column():
-                        gr.Markdown("## Steganography")
-                        gr.Markdown("### Embed Message in Image")
-                        steg_in_image = gr.Image(type="pil", label="Cover Image")
-                        steg_in_message = gr.Textbox(label="Secret Message")
-                        steg_embed_btn = gr.Button("Embed")
-                        steg_out_image = gr.Image(type="pil", label="Stego Image (with hidden message)")
-                        steg_out_key = gr.Textbox(label="Steganography Key (Required for extraction)", interactive=False)
-                        gr.Markdown("---")
-                        gr.Markdown("### Extract Message from Image")
-                        steg_extract_in_image = gr.Image(type="pil", label="Stego Image")
-                        steg_extract_in_key = gr.Textbox(label="Steganography Key")
-                        steg_extract_in_len = gr.Number(label="Secret Message Length (in bytes)", precision=0)
-                        steg_extract_btn = gr.Button("Extract")
-                        steg_extract_out_message = gr.Textbox(label="Extracted Secret Message", interactive=False)
-                    with gr.Column():
-                        gr.Markdown("## Cryptography")
-                        crypto_in_key = gr.Textbox(label="Custom Key / Seed (Optional)", placeholder="Uses your identity key by default")
                         gr.Markdown("### Encrypt")
                         crypto_in_plain = gr.Textbox(label="Plaintext", lines=8)
+                        crypto_enc_key_index = gr.Number(label="OTP Key Index", precision=0)
                         crypto_encrypt_btn = gr.Button("Encrypt")
-                        gr.Markdown("### Decrypt")
                         crypto_out_cipher = gr.Textbox(label="Ciphertext", lines=8)
+                    with gr.Column():
+                        gr.Markdown("### Decrypt")
+                        crypto_in_cipher = gr.Textbox(label="Ciphertext", lines=8)
+                        crypto_dec_key_index = gr.Number(label="OTP Key Index", precision=0)
+                        crypto_dec_len = gr.Number(label="Plaintext Length (in bytes)", precision=0)
                         crypto_decrypt_btn = gr.Button("Decrypt")
+                        crypto_out_plain = gr.Textbox(label="Plaintext", lines=8)
 
             with gr.TabItem("System Log"):
                 log_output = gr.Textbox(label="Log", lines=20, interactive=False, autoscroll=True)
 
-        connect_p2p_btn.click(connect_p2p, [peer_ip_input, p2p_contact_selector], [p2p_status_box, p2p_chat_selector])
+        connect_p2p_btn.click(connect_p2p, [p2p_contact_selector], [p2p_status_box, p2p_chat_selector])
         p2p_chat_input.submit(send_p2p_message_ui, [p2p_chat_input, p2p_chat_selector], [p2p_chat_input])
         p2p_chat_selector.change(change_active_chat, [p2p_chat_selector, all_chat_histories], [p2p_chat_output])
         
         contact_public_id.change(get_contact_username_for_id, [contact_public_id], [contact_generated_username])
         add_contact_btn.click(add_contact_ui, [contact_public_id], [contact_status, p2p_contact_selector])
         
-        steg_embed_btn.click(steg_embed_ui, [steg_in_image, steg_in_message], [steg_out_image, steg_out_key])
-        steg_extract_btn.click(steg_extract_ui, [steg_extract_in_image, steg_extract_in_key, steg_extract_in_len], [steg_extract_out_message])
-        crypto_encrypt_btn.click(encrypt_ui, [crypto_in_plain, crypto_in_key], [crypto_out_cipher])
-        crypto_decrypt_btn.click(decrypt_ui, [crypto_out_cipher, crypto_in_key], [crypto_in_plain])
+        generate_keys_btn.click(generate_keys_ui, [otp_gen_num, otp_gen_len], [otp_status_box]).then(
+            get_key_count_ui, None, otp_count_box)
+        refresh_key_count_btn.click(get_key_count_ui, None, otp_count_box)
+
+        crypto_encrypt_btn.click(encrypt_ui, [crypto_in_plain, crypto_enc_key_index], [crypto_out_cipher])
+        crypto_decrypt_btn.click(decrypt_ui, [crypto_in_cipher, crypto_dec_key_index, crypto_dec_len], [crypto_out_plain])
 
         timer = gr.Timer(1, active=False)
         timer.tick(
             update_ui_loop,
             inputs=[p2p_chat_selector, all_chat_histories],
-            outputs=[log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector, chat_update_trigger]
+            outputs=[log_output, p2p_contact_selector, otp_count_box, all_chat_histories, p2p_chat_selector, chat_update_trigger]
         )
         chat_update_trigger.change(
             change_active_chat,

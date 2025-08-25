@@ -8,7 +8,7 @@ version = "1.0.0"
 authors = [
   { name="Yaron Koresh", email="aharonkoresh1@gmail.com" },
 ]
-description = "Aetherium Q-Com is a secure communication platform featuring a novel, quantum-inspired key exchange protocol with AI-driven security and a full suite of chaos-based cryptographic tools."
+description = "A secure peer-to-peer messaging application using a One-Time Pad (OTP) for end-to-end encryption. The platform features user identity management, a contact system, and a Gradio-based user interface. It supports both one-on-one secure chats and multi-cast messaging to send a single message to multiple contacts simultaneously, with each message consuming a unique portion of the pre-shared OTP key."
 readme = "README.md"
 requires-python = ">=3.7"
 license = { text = "MIT" }
@@ -19,7 +19,9 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Topic :: Security :: Cryptography",
 ]
-dependencies = []
+dependencies = [
+    "numpy",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/YaronKoresh/aetherium-qcom"
@@ -30,4 +32,3 @@ aetherium-qcom = "aetherium_qcom_platform:main"
 
 [tool.setuptools]
 py-modules = ["aetherium_qcom_platform"]
-
