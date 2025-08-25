@@ -23,7 +23,6 @@
 ## Basic Installation:
 
 * The platform will automatically check for and install required Python packages (like `numpy`) on the first run.
-* On some Linux systems, you may need to install `tkinter` separately using your system's package manager (e.g., `sudo apt-get install python3-tk`).
 
 ---
 
@@ -46,3 +45,4 @@ Aetherium Q-Com is a live platform that requires at least two users (and one rel
 * Before asking for support, please make sure you are using the [latest version](https://github.com/YaronKoresh/aetherium-qcom/releases/latest).
 * When looking for support, please first search for your question in the [open or closed issues](https://github.com/YaronKoresh/aetherium-qcom/issues?q=is%3Aissue).
 * GitHub issues are the best way to track enhancements and bugs. Feel free to open a new issue if you've discovered a problem.
+
