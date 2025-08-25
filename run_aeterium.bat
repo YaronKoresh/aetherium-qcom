@@ -14,7 +14,7 @@ if %errorlevel% neq 0 (
 echo Python found.
 echo Installing/Updating Aetherium Q-Com from GitHub...
 
-python -m pip install --upgrade git+https://github.com/YaronKoresh/aetherium-qcom.git
+python -m pip install --upgrade --force-reinstall git+https://github.com/YaronKoresh/aetherium-qcom.git
 
 if %errorlevel% neq 0 (
     echo [ERROR] Installation failed. Please check your internet connection and pip setup.

@@ -98,4 +98,3 @@ The rest of the usage for P2P and Group chats remains the same. One user must la
 
 - Before asking for support, please make sure you are using the [latest version](https://github.com/YaronKoresh/aetherium-qcom).
 - To report bugs or suggest enhancements, please search the [open or closed issues](https://github.com/YaronKoresh/aetherium-qcom/issues?q=is%3Aissue) before opening a new one.
- 

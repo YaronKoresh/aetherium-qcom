@@ -15,7 +15,7 @@ fi
 echo "Python 3 found."
 echo "Installing/Updating Aetherium Q-Com from GitHub..."
 
-python3 -m pip install --upgrade git+https://github.com/YaronKoresh/aetherium-qcom.git
+python3 -m pip install --upgrade --force-reinstall git+https://github.com/YaronKoresh/aetherium-qcom.git
 
 if [ $? -ne 0 ]; then
     echo "[ERROR] Installation failed. Please check your internet connection and pip setup."

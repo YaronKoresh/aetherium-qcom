@@ -13,6 +13,8 @@ import hashlib
 import os
 import base64
 import gradio as gr
+from PIL import Image
+import io
 
 class DependencyManager:
     REQUIRED_PACKAGES = ['numpy', 'Pillow', 'gradio']
@@ -30,7 +32,12 @@ class DependencyManager:
             print("All dependencies are satisfied.")
             return
 
-        os.system(f"pip install {' '.join(missing_packages)}")
+        print(f"Installing missing packages: {missing_packages}")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_packages])
+        except subprocess.CalledProcessError as e:
+            print(f"Error installing packages: {e}")
+            sys.exit(1)
 
 class Config:
     NUM_PULSES = 10000
@@ -42,12 +49,96 @@ class Config:
     HEARTBEAT_PERIOD = 10
     AI_SECURITY_CONFIDENCE = 0.7
     OSCILLATOR_SYNC_TOLERANCE = 0.01
-    DISCOVERY_PORT = 65100
-    CHARLIE_PORT = 65000
-    ALICE_PORT = 65001
-    BOB_PORT = 65002
-    GROUP_HOST_PORT = 65003
-    CHAT_PORT_OFFSET = 100
+    DEFAULT_PORT = 65123
+
+class IdentityManager:
+    IDENTITY_FILE = "identity.key"
+    ADJECTIVES = ['bright', 'dark', 'quiet', 'loud', 'happy', 'silly', 'fast', 'slow', 'warm', 'cold', 'red', 'blue', 'green', 'sharp', 'round']
+    NOUNS = ['fox', 'dog', 'cat', 'tree', 'rock', 'bird', 'fish', 'sun', 'moon', 'star', 'river', 'lake', 'cloud', 'wind', 'fire']
+
+    def __init__(self, log_callback):
+        self.log = log_callback
+        self.private_key = None
+        self.public_id = None
+        self.username = None
+        self._load_or_create_identity()
+
+    def _generate_hash(self, data):
+        return hashlib.sha256(data.encode('utf-8')).hexdigest()
+
+    def generate_username_from_id(self, public_id):
+        random.seed(public_id)
+        adj = random.choice(self.ADJECTIVES)
+        noun = random.choice(self.NOUNS)
+        unique_suffix = public_id[:4]
+        return f"{adj}-{noun}-{unique_suffix}"
+
+    def _load_or_create_identity(self):
+        if os.path.exists(self.IDENTITY_FILE):
+            self.log(f"Loading identity from {self.IDENTITY_FILE}...")
+            with open(self.IDENTITY_FILE, 'r') as f:
+                self.private_key = f.read().strip()
+        else:
+            self.log("No identity key found. Generating a new one...")
+            self.private_key = base64.b64encode(os.urandom(32)).decode('utf-8')
+            with open(self.IDENTITY_FILE, 'w') as f:
+                f.write(self.private_key)
+            self.log(f"New identity key created and saved to {self.IDENTITY_FILE}.")
+        
+        self.public_id = self._generate_hash(self.private_key)
+        self.username = self.generate_username_from_id(self.public_id)
+        self.log(f"Identity loaded. Your permanent username is '{self.username}'")
+
+class ContactManager:
+    CONTACTS_FILE = "contacts.json"
+
+    def __init__(self, log_callback, identity_manager):
+        self.log = log_callback
+        self.identity_manager = identity_manager
+        self.contacts = {}
+        self.load_contacts()
+
+    def load_contacts(self):
+        if os.path.exists(self.CONTACTS_FILE):
+            with open(self.CONTACTS_FILE, 'r') as f:
+                self.contacts = json.load(f)
+            self.log(f"Loaded {len(self.contacts)} contacts.")
+        else:
+            self.log("No contacts file found. Starting with an empty list.")
+
+    def save_contacts(self):
+        with open(self.CONTACTS_FILE, 'w') as f:
+            json.dump(self.contacts, f, indent=4)
+        self.log("Contacts saved.")
+
+    def add_contact(self, public_id):
+        if not public_id:
+            return "Public ID cannot be empty.", False
+        
+        username = self.identity_manager.generate_username_from_id(public_id)
+        
+        if username in self.contacts and self.contacts[username] != public_id:
+             return f"Error: A different contact is already saved with the name '{username}'.", False
+        
+        self.contacts[username] = public_id
+        self.save_contacts()
+        return f"Contact '{username}' added/updated successfully.", True
+    
+    def remove_contact(self, username):
+        if username in self.contacts:
+            del self.contacts[username]
+            self.save_contacts()
+            return f"Contact '{username}' removed."
+        return "Contact not found."
+
+    def get_public_id(self, username):
+        return self.contacts.get(username)
+
+    def get_username_by_id(self, public_id):
+        generated_username = self.identity_manager.generate_username_from_id(public_id)
+        if generated_username in self.contacts and self.contacts[generated_username] == public_id:
+            return generated_username
+        return None
 
 class IntelligentDefense:
     def __init__(self):
@@ -74,42 +165,43 @@ class QuantumSentryCryptography:
     def __init__(self, secure_key_seed):
         self.secure_seed = secure_key_seed
         self.chaotic_map = CoupledChaoticSystem(secure_key_seed, 3.99, 0)
+
     def _generate_keystream(self, length, nonce, seed_override=None):
         temp_seed = seed_override if seed_override is not None else self.secure_seed
+        if not isinstance(temp_seed, float) or not (0.0 <= temp_seed < 1.0):
+             temp_seed = int(hashlib.sha256(str(temp_seed).encode()).hexdigest(), 16) / (2**256)
+
         for byte in nonce:
             temp_seed = (temp_seed + byte / 255.0) / 2.0
         temp_map = CoupledChaoticSystem(temp_seed, 3.99, 0)
-        return bytes([max(1, int(temp_map.evolve(0) or temp_map.state * 255)) for _ in range(length)])
+        keystream = bytearray(length)
+        for i in range(length):
+            temp_map.evolve(0)
+            keystream[i] = int(temp_map.state * 255)
+        return keystream
+
     def encrypt(self, plaintext, seed_override=None):
         nonce = os.urandom(8)
-        keystream = self._generate_keystream(len(plaintext), nonce, seed_override)
+        keystream = self._generate_keystream(len(plaintext.encode('utf-8')), nonce, seed_override)
         encrypted_payload = bytes([p ^ k for p, k in zip(plaintext.encode('utf-8'), keystream)])
-        return (nonce + encrypted_payload).hex()
-    def decrypt(self, hex_ciphertext, seed_override=None):
-        ciphertext = bytes.fromhex(hex_ciphertext)
-        nonce = ciphertext[:8]
-        encrypted_payload = ciphertext[8:]
+        return base64.b64encode(nonce + encrypted_payload).decode('utf-8')
+
+    def decrypt(self, b64_ciphertext, seed_override=None):
+        ciphertext = base64.b64decode(b64_ciphertext.encode('utf-8'))
+        nonce, encrypted_payload = ciphertext[:8], ciphertext[8:]
         keystream = self._generate_keystream(len(encrypted_payload), nonce, seed_override)
         return bytes([c ^ k for c, k in zip(encrypted_payload, keystream)]).decode('utf-8')
-    def hash(self, message):
-        temp_map = CoupledChaoticSystem(0.5, 3.99, 0)
-        for byte in message.encode('utf-8'):
-            temp_map.state = (temp_map.state + byte / 255.0) / 2.0
-            temp_map.evolve(0)
-        return hex(int(temp_map.state * (10**16)))
+
     def _data_to_byte_array(self, data):
-        if isinstance(data, bytearray): return data
-        if isinstance(data, bytes): return bytearray(data)
-        if isinstance(data, str):
-            try:
-                with open(data, 'rb') as f: return bytearray(f.read())
-            except Exception as e: raise IOError(f"Could not read file: {data}\n{e}")
+        if isinstance(data, (bytes, bytearray)): return bytearray(data)
+        if isinstance(data, Image.Image): return bytearray(data.tobytes())
         if isinstance(data, np.ndarray): return bytearray(data.tobytes())
-        raise TypeError(f"Unsupported data type: {type(data)}")
+        raise TypeError(f"Unsupported data type for steganography: {type(data)}")
+
     def steg_embed(self, cover_data, secret_message):
         data_bytes = self._data_to_byte_array(cover_data)
         message_bits = ''.join(format(byte, '08b') for byte in secret_message.encode('utf-8'))
-        if len(message_bits) > len(data_bytes): raise ValueError("Secret message is too large.")
+        if len(message_bits) > len(data_bytes): raise ValueError("Secret message is too large for the cover data.")
         self.chaotic_map.evolve(0)
         key_float = self.chaotic_map.state
         steganography_key = hex(int(key_float * (10**16)))
@@ -118,17 +210,22 @@ class QuantumSentryCryptography:
             pixel_index = indices[i]
             data_bytes[pixel_index] = (data_bytes[pixel_index] & 0xFE) | int(bit)
         return data_bytes, steganography_key
+
     def steg_extract(self, cover_data, message_length_bytes, steganography_key):
         data_bytes = self._data_to_byte_array(cover_data)
         key_int = int(steganography_key, 16)
         key_float = key_int / (10**16)
         indices = list(range(len(data_bytes))); random.Random(key_float).shuffle(indices)
-        bits = "".join(str(data_bytes[indices[i]] & 1) for i in range(message_length_bytes * 8))
-        return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)).decode('utf-8')
+        num_bits = message_length_bytes * 8
+        if num_bits > len(data_bytes): raise ValueError("Message length is larger than the cover data.")
+        bits = "".join(str(data_bytes[indices[i]] & 1) for i in range(num_bits))
+        return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)).decode('utf-8', errors='ignore')
+
     def get_security_words(self):
         adjectives = ['happy', 'silly', 'fast', 'slow', 'bright', 'dark', 'warm', 'cold']
         nouns = ['fox', 'dog', 'cat', 'tree', 'rock', 'bird', 'fish', 'sun']
-        random.seed(self.secure_seed)
+        seed_int = int(hashlib.sha256(str(self.secure_seed).encode()).hexdigest(), 16)
+        random.seed(seed_int)
         word1 = random.choice(adjectives)
         word2 = random.choice(nouns)
         return f"{word1}-{word2}"
@@ -152,7 +249,7 @@ class ProtocolEngine:
         self.chaotic_system = CoupledChaoticSystem(shared_secret / p, self.config.CHAOTIC_MAP_R, self.config.COUPLING_STRENGTH)
     def prepare_pulse_data(self, current_time):
         bit, basis = random.choice([0, 1]), self.chaotic_system.get_basis()
-        delay = self.heartbeat.get_timing_delay() if self.name == 'User 1' else 0
+        delay = self.heartbeat.get_timing_delay() if self.name == 'initiator' else 0
         self.bits.append(bit); self.bases.append(basis); self.timestamps.append(current_time + delay)
         intensity = random.choice(['vacuum', 'decoy', 'signal'])
         return {'bit': bit, 'basis': basis, 'mean_photon_number': {'vacuum': 0.0, 'decoy': 0.1, 'signal': 0.5}[intensity], 'timestamp': current_time + delay}
@@ -168,25 +265,34 @@ class ProtocolEngine:
         if self.baseline_fingerprint is None:
             if outcomes: self.baseline_fingerprint = {k: v / len(outcomes) for k, v in current_fingerprint.items()}
         else:
-            dev = 0
-            if outcomes: [dev := dev + abs(v - current_fingerprint.get(k, 0) / len(outcomes)) for k, v in self.baseline_fingerprint.items()]
+            dev = sum(abs(self.baseline_fingerprint.get(k, 0) - current_fingerprint.get(k, 0) / len(outcomes)) for k in set(self.baseline_fingerprint) | set(current_fingerprint)) if outcomes else 0
             fingerprint_dev = dev
         evidence = {'qber': qber, 'snr': snr, 'fingerprint_dev': fingerprint_dev}
         self.defense_ai.update(evidence, self.log_callback)
         return self.defense_ai.is_secure(self.config.AI_SECURITY_CONFIDENCE)
     def get_final_key_seed(self):
         return self.chaotic_system.state
+class Node:
+    def __init__(self, config, identity_manager, contact_manager, log_queue, event_queue):
+        self.config = config
+        self.identity = identity_manager
+        self.contacts = contact_manager
+        self.log_queue = log_queue
+        self.event_queue = event_queue
+        self.stop_event = threading.Event()
+        self.sessions = {}
+        self.server_socket = None
 
-class NetworkNode(threading.Thread):
-    def __init__(self, name, log_queue):
-        super().__init__(daemon=True)
-        self.name = name; self.log_queue = log_queue
-    def log(self, message): self.log_queue.put(f"[{self.name}] {message}")
+    def log(self, message): self.log_queue.put(f"[Node] {message}")
+
     def send_json(self, sock, data):
         try:
             message = json.dumps(data).encode('utf-8')
             sock.sendall(len(message).to_bytes(4, 'big') + message)
-        except (ConnectionResetError, BrokenPipeError, OSError): pass
+            return True
+        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+            self.log(f"Send failed: {e}"); return False
+
     def recv_json(self, sock):
         try:
             len_bytes = sock.recv(4)
@@ -198,557 +304,369 @@ class NetworkNode(threading.Thread):
                 if not packet: return None
                 data += packet
             return json.loads(data.decode('utf-8'))
-        except (json.JSONDecodeError, ConnectionResetError, ConnectionAbortedError, OSError): return None
+        except (json.JSONDecodeError, ConnectionResetError, ConnectionAbortedError, OSError, socket.timeout):
+            return None
 
-class SessionHostNode(NetworkNode):
-    def __init__(self, config, log_queue):
-        super().__init__("Session Host", log_queue)
-        self.config = config
-        self.stop_event = threading.Event()
-        self.sessions = {}
-    def run(self):
-        self.log("Session Host starting...")
-        threading.Thread(target=self.broadcast_presence, daemon=True).start()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', self.config.CHARLIE_PORT)); s.listen(10)
-            self.log(f"Listening for connections on port {self.config.CHARLIE_PORT}")
-            while not self.stop_event.is_set():
-                try:
-                    conn, addr = s.accept()
-                    threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
-                except OSError:
-                    break
-    def handle_client(self, conn, addr):
-        client_info = self.recv_json(conn)
-        if not client_info: conn.close(); return
-        session_code = client_info['session_code']
-        self.log(f"Client '{client_info['name']}' from {addr[0]} wants to join session '{session_code}'")
-        if session_code not in self.sessions:
-            self.sessions[session_code] = []
-        self.sessions[session_code].append({'conn': conn, 'pub_key': client_info['pub_key'], 'ip': addr[0], 'name': client_info['name']})
-        if len(self.sessions[session_code]) == 2:
-            self.log(f"Session '{session_code}' is full. Pairing users for P2P QKD...")
-            client1, client2 = self.sessions[session_code]
-            self.send_json(client1['conn'], {'pub_key': client2['pub_key'], 'peer_ip': client2['ip'], 'peer_name': client2['name']})
-            self.send_json(client2['conn'], {'pub_key': client1['pub_key'], 'peer_ip': client1['ip'], 'peer_name': client1['name']})
-            self.run_qkd_session(client1['conn'], client2['conn'])
-            del self.sessions[session_code]
-    def run_qkd_session(self, conn1, conn2):
-        for _ in range(self.config.NUM_PULSES):
-            pulse1 = self.recv_json(conn1); pulse2 = self.recv_json(conn2)
-            if pulse1 is None or pulse2 is None: break
-            prob = (1 - math.exp(-pulse1['mean_photon_number'])) * (1 - math.exp(-pulse2['mean_photon_number'])) * 0.5
+    def start(self):
+        self.log(f"Node starting for user '{self.identity.username}'...")
+        threading.Thread(target=self._listen_for_connections, daemon=True).start()
+
+    def stop(self):
+        self.stop_event.set()
+        if self.server_socket: self.server_socket.close()
+        for session in self.sessions.values(): session['conn'].close()
+        self.log("Node stopped.")
+
+    def _listen_for_connections(self):
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.bind(('127.0.0.1', self.config.DEFAULT_PORT))
+            self.server_socket.listen(10)
+            self.log(f"Listening for connections on port {self.config.DEFAULT_PORT}")
+        except OSError as e:
+            self.log(f"FATAL: Could not bind to port {self.config.DEFAULT_PORT}. Error: {e}")
+            self.event_queue.put({'type': 'error', 'data': f"Could not bind to port {self.config.DEFAULT_PORT}."}); return
+
+        while not self.stop_event.is_set():
+            try:
+                conn, addr = self.server_socket.accept()
+                self.log(f"Incoming connection from {addr}")
+                threading.Thread(target=self.handle_incoming_connection, args=(conn, addr), daemon=True).start()
+            except OSError:
+                if not self.stop_event.is_set(): self.log("Server socket error.")
+                break
+        self.log("Listener loop stopped.")
+
+    def handle_incoming_connection(self, conn, addr):
+        req = self.recv_json(conn)
+        if not req or 'type' not in req:
+            self.log(f"Invalid request from {addr}. Closing."); conn.close(); return
+        
+        if req['type'] == 'p2p_qkd':
+            self._handle_p2p_qkd_responder(conn, req)
+        else:
+            self.log(f"Unknown request type '{req['type']}'. Closing."); conn.close()
+    
+    def initiate_p2p_session(self, peer_ip, peer_username):
+        peer_public_id = self.contacts.get_public_id(peer_username)
+        if not peer_public_id:
+            self.log(f"Cannot connect: username '{peer_username}' not in contacts.")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'User not in contacts.'})
+            return
+
+        try:
+            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            conn.connect((peer_ip, self.config.DEFAULT_PORT))
+            self.send_json(conn, {'type': 'p2p_qkd', 'public_id': self.identity.public_id, 'username': self.identity.username})
+            self._run_qkd_and_auth(conn, 'initiator', peer_public_id, peer_username)
+        except Exception as e:
+            self.log(f"Failed to connect to {peer_ip}: {e}")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': str(e)})
+
+    def _handle_p2p_qkd_responder(self, conn, request):
+        peer_public_id = request.get('public_id')
+        received_username = request.get('username')
+        
+        expected_username = self.identity.generate_username_from_id(peer_public_id)
+        if expected_username != received_username:
+            self.log(f"IDENTITY ALERT: Peer with Public ID {peer_public_id[:6]}... broadcasted username '{received_username}' but their key corresponds to '{expected_username}'. Rejecting.")
+            self.send_json(conn, {'control': 'abort', 'reason': 'Broadcasted username does not match public key.'}); conn.close(); return
+
+        known_username = self.contacts.get_username_by_id(peer_public_id)
+        if not known_username:
+            self.log(f"Connection from unknown Public ID {peer_public_id[:10]}... ('{expected_username}'). Add them as a contact to connect.")
+            self.send_json(conn, {'control': 'abort', 'reason': 'Unknown public ID - not in contacts.'}); conn.close(); return
+
+        self.log(f"Accepted P2P session with '{known_username}' ({peer_public_id[:10]}...)")
+        self._run_qkd_and_auth(conn, 'responder', peer_public_id, known_username)
+
+    def _run_qkd_and_auth(self, conn, role, peer_public_id, peer_username):
+        engine = ProtocolEngine(role, self.config, self.log)
+        private_key = random.randint(1, self.config.DIFFIE_HELLMAN_PRIME - 1)
+        public_key = pow(self.config.DIFFIE_HELLMAN_GENERATOR, private_key, self.config.DIFFIE_HELLMAN_PRIME)
+        self.send_json(conn, {'dh_pub_key': public_key})
+        peer_dh_data = self.recv_json(conn)
+        if not peer_dh_data: self.log("QKD Failed: No DH key."); conn.close(); return
+        engine.establish_chaotic_seed(private_key, peer_dh_data['dh_pub_key'])
+        self.log("Chaotic seed established.")
+        
+        results = []
+        for i in range(self.config.NUM_PULSES):
+            pulse_data = engine.prepare_pulse_data(i * 1e-9)
+            if not self.send_json(conn, {'pulse': pulse_data}): break
+            response = self.recv_json(conn)
+            if not response or 'pulse' not in response: break
+            peer_pulse = response['pulse']
+            prob = (1 - math.exp(-pulse_data['mean_photon_number'])) * (1 - math.exp(-peer_pulse['mean_photon_number'])) * 0.5
             success = random.random() < prob
             outcome = random.choice(['Psi-', 'Psi+', 'Phi-', 'Phi+']) if success else None
-            result1 = {'success': success, 'outcome': outcome, 'bit_other': pulse2['bit'] if success else -1}
-            self.send_json(conn1, result1)
-            result2 = {'success': success, 'outcome': outcome, 'bit_other': pulse1['bit'] if success else -1}
-            self.send_json(conn2, result2)
-        self.log("QKD session finished.")
-    def broadcast_presence(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            message = json.dumps({"type": "AETHERIUM_RELAY_DISCOVERY", "port": self.config.CHARLIE_PORT}).encode('utf-8')
-            while not self.stop_event.is_set():
-                sock.sendto(message, ('<broadcast>', self.config.DISCOVERY_PORT))
-                time.sleep(3)
+            results.append({'success': success, 'outcome': outcome, 'bit_other': peer_pulse['bit'] if success else -1, 'timestamp': pulse_data['timestamp']})
+            if not self.send_json(conn, {'bsm_result': {'success': success, 'outcome': outcome, 'bit_other': pulse_data['bit'] if success else -1, 'timestamp': peer_pulse['timestamp']}}): break
+            if (i + 1) % self.config.EPOCH_SIZE == 0:
+                if not self.send_json(conn, {'bases': engine.bases[-self.config.EPOCH_SIZE:]}): break
+                peer_bases_data = self.recv_json(conn)
+                if not peer_bases_data: break
+                if not engine.analyze_epoch(results[-self.config.EPOCH_SIZE:], peer_bases_data['bases']):
+                    self.log("AI Anomaly Detected! Aborting."); self.send_json(conn, {'control': 'abort', 'reason': 'AI Anomaly'}); conn.close(); return
+        
+        self.send_json(conn, {'state': engine.chaotic_system.state})
+        peer_state_data = self.recv_json(conn)
+        if not peer_state_data: self.log("QKD Failed: No final state."); conn.close(); return
+        
+        sync_error = abs(engine.chaotic_system.state - peer_state_data['state'])
+        if sync_error >= self.config.OSCILLATOR_SYNC_TOLERANCE:
+            self.log("QKD Failed: Sync error too high."); conn.close(); return
+        
+        qkd_key = engine.get_final_key_seed()
+        self.log("QKD key exchange successful.")
 
-class GroupSessionHostNode(NetworkNode):
-    def __init__(self, config, log_queue):
-        super().__init__("Group Host", log_queue)
-        self.config = config
-        self.stop_event = threading.Event()
-        self.sessions = {}
-    def run(self):
-        self.log("Group Session Host starting...")
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', self.config.GROUP_HOST_PORT))
-            s.listen(10)
-            self.log(f"Listening for group connections on port {self.config.GROUP_HOST_PORT}")
-            while not self.stop_event.is_set():
-                try:
-                    conn, addr = s.accept()
-                    threading.Thread(target=self.handle_client, args=(conn, addr), daemon=True).start()
-                except OSError:
-                    break
-    def handle_client(self, conn, addr):
-        self.log(f"New group client connection from {addr}")
+        my_info = {'pid': self.identity.public_id, 'un': self.identity.username}
+        peer_info = {'pid': peer_public_id, 'un': peer_username}
+        participants = sorted([my_info, peer_info], key=lambda x: x['pid'])
+        p1, p2 = participants[0], participants[1]
+
+        secret_string = f"{qkd_key}:{p1['pid']}:{p1['un']}:{p2['pid']}:{p2['un']}:{self.identity.private_key}"
+        final_session_key_str = hashlib.sha256(secret_string.encode()).hexdigest()
+        final_session_key = int(final_session_key_str, 16) / (2**256)
+
+        verification_hash = hashlib.sha256(final_session_key_str.encode()).hexdigest()
+        self.send_json(conn, {'verify_hash': verification_hash})
+        
+        peer_verify_data = self.recv_json(conn)
+        if not peer_verify_data or peer_verify_data.get('verify_hash') != verification_hash:
+            self.log("FATAL: CRYPTOGRAPHIC IDENTITY VERIFICATION FAILED! Impersonation or MITM attack likely.")
+            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': 'Cryptographic identity verification failed!'})
+            conn.close(); return
+
+        self.log(f"✅ Identity Verified & Secure P2P Session Established with '{peer_username}'!")
+        
+        crypto_suite = QuantumSentryCryptography(final_session_key)
+        self.sessions[peer_username] = {'conn': conn, 'crypto': crypto_suite, 'public_id': peer_public_id}
+        
+        self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'success', 'security_words': crypto_suite.get_security_words()})
+        self._listen_for_messages(conn, peer_username)
+
+    def _listen_for_messages(self, conn, peer_username):
         while not self.stop_event.is_set():
-            msg = self.recv_json(conn)
-            if msg is None:
-                self.remove_client(conn)
+            message = self.recv_json(conn)
+            if message is None:
+                self.log(f"Connection with '{peer_username}' lost.")
+                self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'disconnected'})
+                if peer_username in self.sessions: del self.sessions[peer_username]
                 break
-            command = msg.get('command')
-            session_code = msg.get('session_code')
-            user_name = msg.get('name')
-            if command == 'create':
-                self.sessions[session_code] = {'owner': user_name, 'members': {user_name: conn}}
-                self.log(f"User '{user_name}' created group session '{session_code}'")
-                self.broadcast_user_list(session_code)
-            elif command == 'join':
-                if session_code in self.sessions:
-                    self.sessions[session_code]['members'][user_name] = conn
-                    self.log(f"User '{user_name}' joined group session '{session_code}'")
-                    self.broadcast_user_list(session_code)
-                else:
-                    self.send_json(conn, {'type': 'error', 'message': 'Session not found'})
-            elif command == 'message':
-                self.log(f"Broadcasting message from '{user_name}' in session '{session_code}'")
-                self.broadcast(session_code, {'type': 'group_message', 'from': user_name, 'data': msg.get('data')}, exclude=user_name)
-            elif command == 'distribute_key':
-                self.log(f"Distributing wrapped key for session '{session_code}'")
-                self.broadcast(session_code, {'type': 'key_distribution', 'from': user_name, 'wrapped_keys': msg.get('wrapped_keys')}, exclude=user_name)
-    def broadcast(self, session_code, message, exclude=None):
-        if session_code in self.sessions:
-            members = self.sessions[session_code]['members']
-            for name, conn in list(members.items()):
-                if name != exclude:
-                    try:
-                        self.send_json(conn, message)
-                    except:
-                        self.remove_client(conn)
-    def broadcast_user_list(self, session_code):
-        if session_code in self.sessions:
-            user_list = list(self.sessions[session_code]['members'].keys())
-            self.broadcast(session_code, {'type': 'user_list_update', 'users': user_list})
-    def remove_client(self, conn):
-        for code, session in self.sessions.items():
-            for name, client_conn in list(session['members'].items()):
-                if client_conn == conn:
-                    self.log(f"Client '{name}' disconnected.")
-                    del session['members'][name]
-                    self.broadcast_user_list(code)
-                    return
+            
+            if message.get('type') == 'p2p_chat':
+                self.event_queue.put({'type': 'p2p_message', 'from': peer_username, 'data': message['data']})
 
-class UserNode(NetworkNode):
-    def __init__(self, name, session_code, config, log_queue, result_queue, chat_queue):
-        super().__init__(name, log_queue)
-        self.session_code = session_code; self.config = config; self.result_queue = result_queue; self.chat_queue = chat_queue
-        self.engine = ProtocolEngine(name, config, self.log)
-        self.chat_socket = None; self.peer_ip = None; self.peer_port = None
-    def run(self):
-        self.log("Client Node starting...")
-        relay_ip = self.discover_relay()
-        if not relay_ip:
-            self.result_queue.put({'type': 'request_ip'})
-            relay_ip = self.result_queue.get()
-            if not relay_ip: self.log("No Host IP provided. Aborting."); self.result_queue.put(None); return
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s_charlie:
-                s_charlie.connect((relay_ip, self.config.CHARLIE_PORT))
-                self.log(f"Connected to Host at {relay_ip}:{self.config.CHARLIE_PORT}")
-                private_key = random.randint(1, self.config.DIFFIE_HELLMAN_PRIME - 1)
-                public_key = pow(self.config.DIFFIE_HELLMAN_GENERATOR, private_key, self.config.DIFFIE_HELLMAN_PRIME)
-                self.send_json(s_charlie, {'name': self.name, 'pub_key': public_key, 'session_code': self.session_code})
-                other_data = self.recv_json(s_charlie)
-                if not other_data or 'pub_key' not in other_data:
-                    self.log("Failed to get peer data from host.")
-                    self.result_queue.put(None)
-                    return
-                other_public_key = other_data['pub_key']
-                self.peer_ip = other_data['peer_ip']
-                self.peer_port = self.config.BOB_PORT if self.name == "User 1" else self.config.ALICE_PORT
-                self.log(f"Peer '{other_data['peer_name']}' is at {self.peer_ip}")
-                self.engine.establish_chaotic_seed(private_key, other_public_key); self.log("Chaotic seed established.")
-                results = []
-                for i in range(self.config.NUM_PULSES):
-                    pulse_data = self.engine.prepare_pulse_data(i * 1e-9)
-                    self.send_json(s_charlie, pulse_data)
-                    result = self.recv_json(s_charlie)
-                    if result is None: break
-                    results.append(result)
-                    if (i + 1) % self.config.EPOCH_SIZE == 0:
-                        if not self.perform_epoch_analysis(results[-self.config.EPOCH_SIZE:]):
-                            self.result_queue.put(None); return
-                final_key = self.perform_final_sync()
-                final_key_package = {'key': final_key, 'peer_name': other_data['peer_name']}
-                self.result_queue.put(final_key_package)
-        except Exception as e: self.log(f"QKD Error: {e}"); self.result_queue.put(None)
-        self.log("QKD process finished.")
-    def discover_relay(self):
-        self.log("Searching for Session Host on the local network...")
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.bind(("", self.config.DISCOVERY_PORT))
-            sock.settimeout(5)
-            try:
-                data, addr = sock.recvfrom(1024)
-                message = json.loads(data.decode('utf-8'))
-                if message.get("type") == "AETHERIUM_RELAY_DISCOVERY":
-                    self.log(f"Found Host at {addr[0]}"); return addr[0]
-            except socket.timeout: self.log("Automatic discovery timed out."); return None
-        return None
-    def perform_epoch_analysis(self, results):
-        my_port = self.config.ALICE_PORT if self.name == "User 1" else self.config.BOB_PORT
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s_peer:
-                if self.name == 'User 1':
-                    serv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    serv.bind(('', my_port)); serv.listen(1)
-                    conn, addr = serv.accept()
-                    with conn:
-                        self.send_json(conn, {'bases': self.engine.bases[-self.config.EPOCH_SIZE:]})
-                        other_bases = self.recv_json(conn)['bases']
-                    serv.close()
-                else:
-                    time.sleep(0.5)
-                    s_peer.connect((self.peer_ip, self.peer_port))
-                    other_bases = self.recv_json(s_peer)['bases']
-                    self.send_json(s_peer, {'bases': self.engine.bases[-self.config.EPOCH_SIZE:]})
-            is_secure = self.engine.analyze_epoch(results, other_bases)
-            if not is_secure: self.log("AI detected anomaly. Aborting."); return False
-            return True
-        except Exception as e: self.log(f"Epoch Sync Error: {e}"); return False
-    def perform_final_sync(self):
-        my_port = self.config.ALICE_PORT if self.name == "User 1" else self.config.BOB_PORT
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s_peer:
-                if self.name == 'User 1':
-                    serv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    serv.bind(('', my_port)); serv.listen(1)
-                    conn, addr = serv.accept()
-                    with conn:
-                        self.send_json(conn, {'state': self.engine.chaotic_system.state})
-                        other_state = self.recv_json(conn)['state']
-                    serv.close()
-                else:
-                    time.sleep(0.5)
-                    s_peer.connect((self.peer_ip, self.peer_port))
-                    other_state = self.recv_json(s_peer)['state']
-                    self.send_json(s_peer, {'state': self.engine.chaotic_system.state})
-            sync_error = abs(self.engine.chaotic_system.state - other_state)
-            self.log(f"Final oscillator sync error: {sync_error:.6f}")
-            if sync_error < self.config.OSCILLATOR_SYNC_TOLERANCE: return self.engine.get_final_key_seed()
-            return None
-        except Exception as e: self.log(f"Final Sync Error: {e}"); return None
-    def start_chat_listener(self):
-        my_port = self.config.ALICE_PORT if self.name == "User 1" else self.config.BOB_PORT
-        threading.Thread(target=self._chat_listener_thread, args=(my_port,), daemon=True).start()
-    def _chat_listener_thread(self, my_port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('127.0.0.1', my_port + self.config.CHAT_PORT_OFFSET))
-            s.listen(1)
-            self.log(f"Chat listener started on port {my_port + self.config.CHAT_PORT_OFFSET}")
-            conn, addr = s.accept()
-            with conn:
-                self.log(f"Chat connection established with {addr}")
-                while True:
-                    encrypted_msg = self.recv_json(conn)
-                    if encrypted_msg is None: break
-                    self.chat_queue.put({'type': 'received', 'data': encrypted_msg['data']})
-            self.log("Chat connection closed.")
-    def connect_and_send_chat(self, encrypted_msg):
-        if not self.chat_socket or self.chat_socket.fileno() == -1:
-            self.chat_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                self.chat_socket.connect((self.peer_ip, self.peer_port + self.config.CHAT_PORT_OFFSET))
-                self.log(f"Connected to peer for chat at {self.peer_ip}:{self.peer_port + self.config.CHAT_PORT_OFFSET}")
-            except Exception as e:
-                self.log(f"Chat connection failed: {e}"); return
-        self.send_json(self.chat_socket, {'data': encrypted_msg})
+    def send_p2p_message(self, peer_username, text_message):
+        if peer_username in self.sessions:
+            session = self.sessions[peer_username]
+            encrypted_msg = session['crypto'].encrypt(text_message)
+            self.send_json(session['conn'], {'type': 'p2p_chat', 'data': encrypted_msg})
+        else:
+            self.log(f"Not connected to peer '{peer_username}'.")
 
 class AppState:
     def __init__(self):
         self.app_config = Config()
-        self.secure_key_seed = None
-        self.crypto_suite = None
         self.log_queue = queue.Queue()
-        self.result_queue = queue.Queue()
-        self.chat_queue = queue.Queue()
-        self.user_node = None
-        self.password_vault = {}
-        self.group_chat_socket = None
-        self.group_session_code = None
-        self.group_key = None
-        self.user_name = "User" + str(random.randint(100, 999))
-        self.p2p_keys = {}
+        self.event_queue = queue.Queue()
+        self.identity_manager = IdentityManager(self.log)
+        self.contact_manager = ContactManager(self.log, self.identity_manager)
+        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.log_queue, self.event_queue)
+        
+        offline_seed = int(hashlib.sha256(self.identity_manager.private_key.encode()).hexdigest(), 16) / (2**256)
+        self.offline_crypto_suite = QuantumSentryCryptography(offline_seed)
+        
         self.system_log = ""
-        self.p2p_chat_history = ""
-        self.group_chat_history = ""
-        self.group_user_list = []
-        self.is_owner = False
+        self.p2p_chats = {}
 
     def log(self, message):
-        timestamp = time.strftime("%H:%M:%S", time.localtime())
-        self.system_log += f"{timestamp} - {message}\n"
+        self.system_log += f"{time.strftime('%H:%M:%S')} - {message}\n"
 
-    def add_p2p_chat(self, message):
-        self.p2p_chat_history += message + "\n"
-
-    def add_group_chat(self, message):
-        self.group_chat_history += message + "\n"
+    def add_p2p_chat(self, peer_username, message):
+        if peer_username not in self.p2p_chats:
+            self.p2p_chats[peer_username] = {'history': "", 'crypto': None, 'status': 'connecting'}
+        self.p2p_chats[peer_username]['history'] += message + "\n"
 
 app_state = AppState()
 
-def log_to_state(message):
-    app_state.log(message)
-
-def launch_p2p_host():
-    app_state.log("Launching P2P Session Host...")
-    charlie = SessionHostNode(app_state.app_config, app_state.log_queue)
-    charlie.start()
-    return "P2P Host is running...", gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False)
-
-def launch_group_host():
-    app_state.log("Launching Group Session Host...")
-    group_host = GroupSessionHostNode(app_state.app_config, app_state.log_queue)
-    group_host.start()
-    return "Group Host is running...", gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False)
-
-def create_p2p_session():
-    word1 = random.choice(['blue', 'red', 'green', 'fast', 'slow', 'dark', 'light'])
-    word2 = random.choice(['cat', 'dog', 'fox', 'bird', 'fish', 'tree', 'rock'])
-    num = random.randint(1, 99)
-    session_code = f"{word1}-{word2}-{num}"
-    app_state.log(f"Generated P2P session code: {session_code}")
-    app_state.user_node = UserNode(app_state.user_name, session_code, app_state.app_config, app_state.log_queue, app_state.result_queue, app_state.chat_queue)
-    app_state.user_node.start()
-    return f"Session code: {session_code}. Waiting for peer...", gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False)
-
-def join_p2p_session(session_code):
-    if not session_code:
-        return "Please enter a session code.", gr.update(), gr.update(), gr.update(), gr.update()
-    app_state.log(f"Joining P2P session '{session_code}'...")
-    app_state.user_node = UserNode(app_state.user_name, session_code, app_state.app_config, app_state.log_queue, app_state.result_queue, app_state.chat_queue)
-    app_state.user_node.start()
-    return f"Joining session '{session_code}'...", gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False), gr.update(interactive=False)
-
-def update_logs():
-    while not app_state.log_queue.empty():
-        msg = app_state.log_queue.get_nowait()
-        app_state.log(msg)
-    
-    while not app_state.chat_queue.empty():
-        msg_obj = app_state.chat_queue.get_nowait()
-        if msg_obj.get('type') == 'received':
-            try:
-                decrypted = app_state.crypto_suite.decrypt(msg_obj['data'])
-                app_state.add_p2p_chat(f"Peer: {decrypted}")
-            except Exception as e:
-                app_state.log(f"P2P decrypt error: {e}")
-        else:
-            handle_group_message(msg_obj)
-            
-    if not app_state.result_queue.empty():
-        result_package = app_state.result_queue.get_nowait()
-        if result_package and result_package.get('key'):
-            result = result_package['key']
-            peer_name = result_package['peer_name']
-            app_state.secure_key_seed = result
-            app_state.crypto_suite = QuantumSentryCryptography(app_state.secure_key_seed)
-            app_state.p2p_keys[peer_name] = app_state.secure_key_seed
-            app_state.log(f"✅ SECURE P2P KEY ESTABLISHED with {peer_name}!")
-            app_state.add_p2p_chat(f"[System] Secure connection with {peer_name} established. Security words: {app_state.crypto_suite.get_security_words()}")
-        else:
-            app_state.log("❌ KEY EXCHANGE FAILED!")
+def update_ui_loop():
+    while not app_state.log_queue.empty(): app_state.log(app_state.log_queue.get_nowait())
+    while not app_state.event_queue.empty():
+        event = app_state.event_queue.get_nowait()
+        peer_username = event.get('peer_username') or event.get('from')
+        if not peer_username: continue
         
-    return app_state.system_log, app_state.p2p_chat_history, app_state.group_chat_history, app_state.group_user_list
-
-def handle_group_message(msg_obj):
-    msg_type = msg_obj.get('type')
-    if msg_type == 'group_message' and app_state.group_key:
-        try:
-            decrypted = app_state.crypto_suite.decrypt(msg_obj['data'], seed_override=app_state.group_key)
-            app_state.add_group_chat(f"{msg_obj['from']}: {decrypted}")
-        except Exception as e:
-            app_state.log(f"Group decrypt error: {e}")
-    elif msg_type == 'user_list_update':
-        app_state.group_user_list = msg_obj['users']
-        if app_state.is_owner:
-            distribute_group_key()
-    elif msg_type == 'key_distribution':
-        wrapped_keys = msg_obj['wrapped_keys']
-        if app_state.user_name in wrapped_keys:
-            my_wrapped_key = wrapped_keys[app_state.user_name]
-            owner_name = msg_obj['from']
-            if owner_name in app_state.p2p_keys:
-                p2p_key_with_owner = app_state.p2p_keys[owner_name]
-                try:
-                    decrypted_group_key_str = app_state.crypto_suite.decrypt(my_wrapped_key, seed_override=p2p_key_with_owner)
-                    app_state.group_key = float(decrypted_group_key_str)
-                    app_state.log(f"Successfully unwrapped and set group key from {owner_name}!")
-                    app_state.add_group_chat("[System] Group chat is now secured.")
-                except Exception as e:
-                    app_state.log(f"Failed to decrypt group key: {e}")
+        if event['type'] == 'p2p_status':
+            if event['status'] == 'success':
+                app_state.p2p_chats[peer_username] = {'history': f"[System] ✅ Secure connection established with '{peer_username}'.\nSecurity Words: {event['security_words']}\n", 'crypto': app_state.node.sessions[peer_username]['crypto'], 'status': 'connected'}
+                app_state.log(f"Successfully connected to peer '{peer_username}'")
             else:
-                app_state.log(f"Cannot decrypt group key: No P2P key with owner {owner_name}")
+                status_msg = f"[System] ❌ Connection to '{peer_username}' failed or disconnected.\nReason: {event.get('reason', 'Connection lost.')}\n"
+                if peer_username in app_state.p2p_chats:
+                    app_state.p2p_chats[peer_username]['history'] += status_msg
+                    app_state.p2p_chats[peer_username]['status'] = 'disconnected'
+                else:
+                    app_state.p2p_chats[peer_username] = {'history': status_msg, 'crypto': None, 'status': 'failed'}
+                app_state.log(f"Connection with '{peer_username}' failed or ended.")
+        
+        elif event['type'] == 'p2p_message':
+            if peer_username in app_state.p2p_chats:
+                try:
+                    decrypted_msg = app_state.p2p_chats[peer_username]['crypto'].decrypt(event['data'])
+                    app_state.add_p2p_chat(peer_username, f"{peer_username}: {decrypted_msg}")
+                except Exception as e:
+                    app_state.log(f"P2P Decrypt Error from '{peer_username}': {e}")
 
-def send_p2p_message(message):
-    if not message: return ""
-    app_state.add_p2p_chat(f"You: {message}")
-    encrypted = app_state.crypto_suite.encrypt(message)
-    if app_state.user_node:
-        app_state.user_node.connect_and_send_chat(encrypted)
-    return ""
+    chat_histories = {un: chat['history'] for un, chat in app_state.p2p_chats.items()}
+    return app_state.system_log, gr.update(choices=list(app_state.contact_manager.contacts.keys())), chat_histories, list(app_state.p2p_chats.keys())
 
-def connect_to_group_host(host_ip):
-    if app_state.group_chat_socket: return True
+def connect_p2p(peer_ip, peer_username):
+    if not peer_ip or not peer_username: return "Peer IP and Username are required.", gr.update()
+    app_state.log(f"Initiating P2P session with '{peer_username}' at {peer_ip}")
+    threading.Thread(target=app_state.node.initiate_p2p_session, args=(peer_ip, peer_username)).start()
+    app_state.add_p2p_chat(peer_username, f"[System] Connecting to '{peer_username}'...\n")
+    return f"Connecting to {peer_username}...", gr.update(value=peer_username)
+
+def send_p2p_message_ui(message, current_peer):
+    if not message or not current_peer: return ""
+    if app_state.p2p_chats.get(current_peer, {}).get('status') != 'connected':
+        app_state.log("Cannot send message: Not securely connected."); return ""
+    app_state.add_p2p_chat(current_peer, f"You: {message}")
+    app_state.node.send_p2p_message(current_peer, message); return ""
+
+def change_active_chat(peer_username, all_histories_state):
+    return all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
+
+def add_contact_ui(public_id):
+    msg, success = app_state.contact_manager.add_contact(public_id)
+    return msg, gr.update(choices=list(app_state.contact_manager.contacts.keys()))
+
+def get_contact_username_for_id(public_id):
+    if not public_id or len(public_id) != 64: return "[Enter a valid Public ID above]"
+    return app_state.identity_manager.generate_username_from_id(public_id)
+
+def steg_embed_ui(cover_image, secret_message):
+    if cover_image is None or not secret_message: return None, "Error: Cover image and secret message are required."
     try:
-        if not host_ip:
-            app_state.log("Group Host IP is required.")
-            return False
-        app_state.group_chat_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        app_state.group_chat_socket.connect((host_ip, app_state.app_config.GROUP_HOST_PORT))
-        threading.Thread(target=group_listener_thread, daemon=True).start()
-        return True
+        data_bytes, steganography_key = app_state.offline_crypto_suite.steg_embed(cover_image, secret_message)
+        stego_image = Image.frombytes(cover_image.mode, cover_image.size, bytes(data_bytes))
+        app_state.log("Message embedded successfully.")
+        return stego_image, steganography_key
     except Exception as e:
-        app_state.log(f"Failed to connect to group host: {e}")
-        app_state.group_chat_socket = None
-        return False
+        app_state.log(f"Steganography Embed Error: {e}"); return None, str(e)
 
-def group_listener_thread():
-    while True:
-        try:
-            msg = NetworkNode.recv_json(app_state, app_state.group_chat_socket)
-            if msg is None:
-                app_state.log("Disconnected from group host.")
-                app_state.group_chat_socket = None
-                break
-            app_state.chat_queue.put(msg)
-        except:
-            app_state.log("Connection to group host lost.")
-            app_state.group_chat_socket = None
-            break
+def steg_extract_ui(stego_image, steganography_key, message_length):
+    if stego_image is None or not steganography_key or not message_length: return "Error: Stego image, key, and message length are required."
+    try:
+        extracted_message = app_state.offline_crypto_suite.steg_extract(stego_image, int(message_length), steganography_key)
+        app_state.log("Message extracted successfully."); return extracted_message
+    except Exception as e:
+        app_state.log(f"Steganography Extract Error: {e}"); return f"Extraction Failed: {e}"
 
-def create_group_session(host_ip, session_code):
-    if not app_state.crypto_suite: return "Establish a P2P key first."
-    if not connect_to_group_host(host_ip): return "Failed to connect to group host."
-    if not session_code: return "Please enter a group session code."
-    
-    app_state.group_session_code = session_code
-    app_state.is_owner = True
-    NetworkNode.send_json(app_state, app_state.group_chat_socket, {'command': 'create', 'session_code': session_code, 'name': app_state.user_name})
-    
-    app_state.group_key = random.random()
-    app_state.log(f"Generated new group key: {app_state.group_key:.4f}")
-    
-    time.sleep(1) 
-    distribute_group_key()
-    app_state.add_group_chat(f"[System] Created group '{session_code}'. Chat is now secured for you.")
-    return f"Group '{session_code}' created."
+def get_crypto_suite(key_str=None):
+    if key_str:
+        seed = int(hashlib.sha256(key_str.encode()).hexdigest(), 16) / (2**256)
+        return QuantumSentryCryptography(seed)
+    return app_state.offline_crypto_suite
 
-def join_group_session(host_ip, session_code):
-    if not app_state.crypto_suite: return "Establish a P2P key first."
-    if not connect_to_group_host(host_ip): return "Failed to connect to group host."
-    if not session_code: return "Please enter a group session code."
-    
-    app_state.group_session_code = session_code
-    app_state.is_owner = False
-    NetworkNode.send_json(app_state, app_state.group_chat_socket, {'command': 'join', 'session_code': session_code, 'name': app_state.user_name})
-    app_state.add_group_chat(f"[System] Joined group '{session_code}'. Waiting for owner to provide key...")
-    return f"Joined group '{session_code}'."
+def encrypt_ui(plaintext, key):
+    if not plaintext: return ""
+    return get_crypto_suite(key).encrypt(plaintext)
 
-def distribute_group_key():
-    if not app_state.is_owner: return
-    current_users = app_state.group_user_list
-    if len(current_users) <= 1: return
-
-    wrapped_keys = {}
-    for user in current_users:
-        if user == app_state.user_name: continue
-        if user in app_state.p2p_keys:
-            p2p_key = app_state.p2p_keys[user]
-            wrapped_key = app_state.crypto_suite.encrypt(str(app_state.group_key), seed_override=p2p_key)
-            wrapped_keys[user] = wrapped_key
-            app_state.log(f"Wrapped group key for {user}")
-        else:
-            app_state.log(f"Cannot wrap key for {user}: No P2P key established.")
-    
-    if wrapped_keys:
-        NetworkNode.send_json(app_state, app_state.group_chat_socket, {
-            'command': 'distribute_key',
-            'session_code': app_state.group_session_code,
-            'name': app_state.user_name,
-            'wrapped_keys': wrapped_keys
-        })
-        app_state.log("Key distribution payload sent to host.")
-
-def send_group_message(message):
-    if not app_state.group_key: return ""
-    if not message: return ""
-    
-    app_state.add_group_chat(f"You: {message}")
-    encrypted_msg = app_state.crypto_suite.encrypt(message, seed_override=app_state.group_key)
-    
-    NetworkNode.send_json(app_state, app_state.group_chat_socket, {
-        'command': 'message',
-        'session_code': app_state.group_session_code,
-        'name': app_state.user_name,
-        'data': encrypted_msg
-    })
-    return ""
-
-def set_username(username):
-    if username:
-        app_state.user_name = username.strip().replace(" ", "_")
-        return f"Username set to: {app_state.user_name}"
-    return f"Username is currently: {app_state.user_name}"
-
+def decrypt_ui(ciphertext, key):
+    if not ciphertext: return ""
+    try:
+        return get_crypto_suite(key).decrypt(ciphertext)
+    except Exception as e:
+        app_state.log(f"Offline decrypt error: {e}"); return f"DECRYPTION FAILED: {e}"
+        
 def main():
     DependencyManager.ensure_dependencies()
+    app_state.node.start()
 
     with gr.Blocks(theme=gr.themes.Soft(), title="Aetherium Q-Com") as demo:
-        gr.Markdown("# Aetherium Quantum Comms")
-        
+        gr.Markdown("# Aetherium Q-Com")
+        all_chat_histories = gr.State({})
+
         with gr.Tabs():
-            with gr.TabItem("Network Control"):
+            with gr.TabItem("Network & P2P"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("## Connect to a Peer")
+                        p2p_contact_selector = gr.Dropdown(label="Select Contact to Connect", choices=list(app_state.contact_manager.contacts.keys()), interactive=True)
+                        peer_ip_input = gr.Textbox(label="Peer IP Address", value="127.0.0.1")
+                        connect_p2p_btn = gr.Button("Connect Securely to Selected Contact")
+                        p2p_status_box = gr.Textbox(label="Connection Status", interactive=False)
+                    with gr.Column(scale=2):
+                        gr.Markdown("## P2P Chat")
+                        p2p_chat_selector = gr.Dropdown(label="Active P2P Chat", interactive=True)
+                        p2p_chat_output = gr.Textbox(label="Secure Chat", lines=10, interactive=False, autoscroll=True)
+                        p2p_chat_input = gr.Textbox(show_label=False, placeholder="Type your secure message...")
+
+            with gr.TabItem("Identity & Contacts"):
+                 with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("## Your Identity")
+                        gr.Textbox(label="Your Permanent, Key-Generated Username", value=app_state.identity_manager.username, interactive=False)
+                        gr.Textbox(label="Your Full Public ID (Share this with peers)", value=app_state.identity_manager.public_id, interactive=False, lines=3)
+                    with gr.Column():
+                        gr.Markdown("## Manage Contacts")
+                        contact_status = gr.Textbox(label="Status", interactive=False)
+                        contact_public_id = gr.Textbox(label="Contact's Full Public ID")
+                        contact_generated_username = gr.Textbox(label="Generated Username", interactive=False)
+                        add_contact_btn = gr.Button("Add/Update Contact")
+                        
+            with gr.TabItem("Offline Tools"):
                 with gr.Row():
                     with gr.Column():
-                        gr.Markdown("## 1. Host a Session (Optional)")
-                        status_box = gr.Textbox(label="Host Status", interactive=False)
-                        with gr.Row():
-                            p2p_host_btn = gr.Button("Launch P2P Host")
-                            group_host_btn = gr.Button("Launch Group Host")
+                        gr.Markdown("## Steganography")
+                        gr.Markdown("### Embed Message in Image")
+                        steg_in_image = gr.Image(type="pil", label="Cover Image")
+                        steg_in_message = gr.Textbox(label="Secret Message")
+                        steg_embed_btn = gr.Button("Embed")
+                        steg_out_image = gr.Image(type="pil", label="Stego Image (with hidden message)")
+                        steg_out_key = gr.Textbox(label="Steganography Key (Required for extraction)", interactive=False)
+                        gr.Markdown("---")
+                        gr.Markdown("### Extract Message from Image")
+                        steg_extract_in_image = gr.Image(type="pil", label="Stego Image")
+                        steg_extract_in_key = gr.Textbox(label="Steganography Key")
+                        steg_extract_in_len = gr.Number(label="Secret Message Length (in bytes)", precision=0)
+                        steg_extract_btn = gr.Button("Extract")
+                        steg_extract_out_message = gr.Textbox(label="Extracted Secret Message", interactive=False)
                     with gr.Column():
-                        gr.Markdown("## 2. P2P Connection")
-                        p2p_status_box = gr.Textbox(label="P2P Status", interactive=False)
-                        p2p_code_input = gr.Textbox(label="P2P Session Code")
-                        with gr.Row():
-                            create_p2p_btn = gr.Button("Create P2P Session")
-                            join_p2p_btn = gr.Button("Join P2P Session")
-                
-                gr.Markdown("## System Log")
-                log_output = gr.Textbox(label="Log", lines=15, max_lines=15, interactive=False, autoscroll=True)
+                        gr.Markdown("## Cryptography")
+                        crypto_in_key = gr.Textbox(label="Custom Key / Seed (Optional)", placeholder="Uses your identity key by default")
+                        gr.Markdown("### Encrypt")
+                        crypto_in_plain = gr.Textbox(label="Plaintext", lines=8)
+                        crypto_encrypt_btn = gr.Button("Encrypt")
+                        gr.Markdown("### Decrypt")
+                        crypto_out_cipher = gr.Textbox(label="Ciphertext", lines=8)
+                        crypto_decrypt_btn = gr.Button("Decrypt")
 
-            with gr.TabItem("P2P Chat"):
-                p2p_chat_output = gr.Textbox(label="P2P Chat", lines=20, interactive=False, autoscroll=True)
-                p2p_chat_input = gr.Textbox(label="Send Message", show_label=False, placeholder="Type your secure message...")
-                p2p_chat_input.submit(send_p2p_message, [p2p_chat_input], [p2p_chat_input])
+            with gr.TabItem("System Log"):
+                log_output = gr.Textbox(label="Log", lines=20, interactive=False, autoscroll=True)
 
-            with gr.TabItem("Group Chat"):
-                with gr.Row():
-                    group_host_ip = gr.Textbox(label="Group Host IP", value="127.0.0.1")
-                    group_code_input = gr.Textbox(label="Group Session Code")
-                    create_group_btn = gr.Button("Create Group")
-                    join_group_btn = gr.Button("Join Group")
-                group_status_box = gr.Textbox(label="Group Status", interactive=False)
-                with gr.Row():
-                    group_chat_output = gr.Textbox(label="Group Chat", lines=20, interactive=False, autoscroll=True, scale=3)
-                    group_user_list_output = gr.Textbox(label="Members", lines=20, interactive=False, scale=1)
-                group_chat_input = gr.Textbox(label="Send Group Message", show_label=False, placeholder="Type your group message...")
-                group_chat_input.submit(send_group_message, [group_chat_input], [group_chat_input])
-
-            with gr.TabItem("Settings"):
-                username_input = gr.Textbox(label="Username", value=app_state.user_name)
-                username_output = gr.Textbox(label="Status", interactive=False)
-                username_input.submit(set_username, [username_input], [username_output])
-
-        p2p_host_btn.click(launch_p2p_host, outputs=[status_box, p2p_host_btn, group_host_btn, create_p2p_btn, join_p2p_btn])
-        group_host_btn.click(launch_group_host, outputs=[status_box, p2p_host_btn, group_host_btn, create_p2p_btn, join_p2p_btn])
-        create_p2p_btn.click(create_p2p_session, outputs=[p2p_status_box, p2p_host_btn, group_host_btn, create_p2p_btn, join_p2p_btn])
-        join_p2p_btn.click(join_p2p_session, inputs=[p2p_code_input], outputs=[p2p_status_box, p2p_host_btn, group_host_btn, create_p2p_btn, join_p2p_btn])
+        connect_p2p_btn.click(connect_p2p, [peer_ip_input, p2p_contact_selector], [p2p_status_box, p2p_chat_selector])
+        p2p_chat_input.submit(send_p2p_message_ui, [p2p_chat_input, p2p_chat_selector], [p2p_chat_input])
+        p2p_chat_selector.change(change_active_chat, [p2p_chat_selector, all_chat_histories], [p2p_chat_output])
         
-        create_group_btn.click(create_group_session, inputs=[group_host_ip, group_code_input], outputs=[group_status_box])
-        join_group_btn.click(join_group_session, inputs=[group_host_ip, group_code_input], outputs=[group_status_box])
+        contact_public_id.change(get_contact_username_for_id, [contact_public_id], [contact_generated_username])
+        add_contact_btn.click(add_contact_ui, [contact_public_id], [contact_status, p2p_contact_selector])
+        
+        steg_embed_btn.click(steg_embed_ui, [steg_in_image, steg_in_message], [steg_out_image, steg_out_key])
+        steg_extract_btn.click(steg_extract_ui, [steg_extract_in_image, steg_extract_in_key, steg_extract_in_len], [steg_extract_out_message])
+        crypto_encrypt_btn.click(encrypt_ui, [crypto_in_plain, crypto_in_key], [crypto_out_cipher])
+        crypto_decrypt_btn.click(decrypt_ui, [crypto_out_cipher, crypto_in_key], [crypto_in_plain])
 
-        demo.load(update_logs, None, [log_output, p2p_chat_output, group_chat_output, group_user_list_output], stream_every=1.0)
+        demo.load(update_ui_loop, None, [log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector], every=1).then(
+            change_active_chat, [p2p_chat_selector, all_chat_histories], [p2p_chat_output]
+        )
 
     demo.launch()
+    app_state.node.stop()
 
 if __name__ == "__main__":
     main()
-    
