@@ -540,9 +540,8 @@ def send_p2p_message_ui(message, current_peer):
 
 def change_active_chat(peer_username, all_histories_state, current_chat_content):
     new_chat_content = all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
-    if new_chat_content == current_chat_content:
-        return gr.update()
-    return new_chat_content
+    if new_chat_content != current_chat_content:
+        return new_chat_content
 
 def add_contact_ui(public_id):
     msg, success = app_state.contact_manager.add_contact(public_id)
@@ -676,4 +675,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
