@@ -539,7 +539,10 @@ def send_p2p_message_ui(message, current_peer):
     app_state.node.send_p2p_message(current_peer, message); return ""
 
 def change_active_chat(peer_username, all_histories_state):
-    return all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
+    new_chat_content = all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
+    if new_chat_content == current_chat_content:
+        return gr.update() # This tells Gradio: "No changes, do not re-render"
+    return new_chat_content
 
 def add_contact_ui(public_id):
     msg, success = app_state.contact_manager.add_contact(public_id)
