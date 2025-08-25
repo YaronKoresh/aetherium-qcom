@@ -472,6 +472,7 @@ class AppState:
         self.app_config = Config()
         self.log_queue = queue.Queue()
         self.event_queue = queue.Queue()
+        self.system_log = ""
         self.identity_manager = IdentityManager(self.log)
         self.contact_manager = ContactManager(self.log, self.identity_manager)
         self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.log_queue, self.event_queue)
