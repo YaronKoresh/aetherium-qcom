@@ -538,7 +538,7 @@ def send_p2p_message_ui(message, current_peer):
     app_state.add_p2p_chat(current_peer, f"You: {message}")
     app_state.node.send_p2p_message(current_peer, message); return ""
 
-def change_active_chat(peer_username, all_histories_state):
+def change_active_chat(peer_username, all_histories_state, current_chat_content):
     new_chat_content = all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
     if new_chat_content == current_chat_content:
         return gr.update()
@@ -676,3 +676,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
