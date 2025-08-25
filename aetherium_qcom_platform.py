@@ -67,10 +67,7 @@ class DigitalSignatureManager:
         self._generate_keys()
 
     def _generate_keys(self):
-        seed = self.machine_fingerprint
-        private_bytes_seed = hashlib.sha256(seed.encode('utf-8')).digest()
-        private_exponent = int.from_bytes(private_bytes_seed, 'big')
-        self.private_key = rsa.generate_private_key(public_exponent=private_exponent, key_size=2048, backend=default_backend())
+        self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
         self.public_key = self.private_key.public_key()
 
     def sign(self, message):
