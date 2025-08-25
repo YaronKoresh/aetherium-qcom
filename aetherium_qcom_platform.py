@@ -211,7 +211,7 @@ class SessionHostNode(NetworkNode):
         threading.Thread(target=self.broadcast_presence, daemon=True).start()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('', self.config.CHARLIE_PORT)); s.listen(10)
+            s.bind(('127.0.0.1', self.config.CHARLIE_PORT)); s.listen(10)
             self.log(f"Listening for connections on port {self.config.CHARLIE_PORT}")
             while not self.stop_event.is_set():
                 try:
@@ -264,7 +264,7 @@ class GroupSessionHostNode(NetworkNode):
         self.log("Group Session Host starting...")
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('', self.config.GROUP_HOST_PORT))
+            s.bind(('127.0.0.1', self.config.GROUP_HOST_PORT))
             s.listen(10)
             self.log(f"Listening for group connections on port {self.config.GROUP_HOST_PORT}")
             while not self.stop_event.is_set():
@@ -430,7 +430,7 @@ class UserNode(NetworkNode):
     def _chat_listener_thread(self, my_port):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(('', my_port + self.config.CHAT_PORT_OFFSET))
+            s.bind(('127.0.0.1', my_port + self.config.CHAT_PORT_OFFSET))
             s.listen(1)
             self.log(f"Chat listener started on port {my_port + self.config.CHAT_PORT_OFFSET}")
             conn, addr = s.accept()
@@ -751,5 +751,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
+    
