@@ -410,7 +410,7 @@ class P2PDiscovery:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(('', Config.BROADCAST_PORT))
+        sock.bind(('127.0.0.1', Config.BROADCAST_PORT))
         self.log("P2P Discovery listener started.")
         while not self.stop_event.is_set():
             try:
@@ -616,7 +616,7 @@ class Node:
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('', self.config.DEFAULT_PORT))
+            self.server_socket.bind(('127.0.0.1', self.config.DEFAULT_PORT))
             self.server_socket.listen(10)
             self.log(f"Listening for connections on port {self.config.DEFAULT_PORT}")
         except OSError as e:
