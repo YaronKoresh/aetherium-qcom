@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Aetherium_QCom"
+version = "1.0.0"
+authors = [
+  { name="Yaron Koresh", email="aharonkoresh1@gmail.com" },
+]
+description = "Aetherium Q-Com is a secure communication platform featuring a novel, quantum-inspired key exchange protocol with AI-driven security and a full suite of chaos-based cryptographic tools."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Communications :: Chat",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "numpy",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/YaronKoresh/aetherium-qcom"
+"Bug Tracker" = "https://github.com/YaronKoresh/aetherium-qcom/issues"
+
+[project.scripts]
+aetherium-qcom = "aetherium_qcom_platform:main"
+
+[tool.setuptools]
+py-modules = ["aetherium_qcom_platform"]
