@@ -493,7 +493,7 @@ class AppState:
 
 app_state = AppState()
 
-def update_ui_loop():
+def update_ui_loop(current_peer, previous_histories):
     while not app_state.log_queue.empty(): app_state.log(app_state.log_queue.get_nowait())
     while not app_state.event_queue.empty():
         event = app_state.event_queue.get_nowait()
@@ -520,9 +520,22 @@ def update_ui_loop():
                     app_state.add_p2p_chat(peer_username, f"{peer_username}: {decrypted_msg}")
                 except Exception as e:
                     app_state.log(f"P2P Decrypt Error from '{peer_username}': {e}")
+    
+    new_histories = {un: chat['history'] for un, chat in app_state.p2p_chats.items()}
+    old_peer_history = previous_histories.get(current_peer, "")
+    new_peer_history = new_histories.get(current_peer, "")
+    
+    trigger_value = gr.update()
+    if old_peer_history != new_peer_history:
+        trigger_value = str(time.time())
 
-    chat_histories = {un: chat['history'] for un, chat in app_state.p2p_chats.items()}
-    return app_state.system_log, gr.update(choices=list(app_state.contact_manager.contacts.keys())), chat_histories, gr.update(choices=list(app_state.p2p_chats.keys()))
+    return (
+        app_state.system_log,
+        gr.update(choices=list(app_state.contact_manager.contacts.keys())),
+        new_histories,
+        gr.update(choices=list(app_state.p2p_chats.keys())),
+        trigger_value
+    )
 
 def connect_p2p(peer_ip, peer_username):
     if not peer_ip or not peer_username: return "Peer IP and Username are required.", gr.update()
@@ -538,10 +551,8 @@ def send_p2p_message_ui(message, current_peer):
     app_state.add_p2p_chat(current_peer, f"You: {message}")
     app_state.node.send_p2p_message(current_peer, message); return ""
 
-def change_active_chat(peer_username, all_histories_state, current_chat_content):
-    new_chat_content = all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
-    if new_chat_content != current_chat_content:
-        return new_chat_content
+def change_active_chat(peer_username, all_histories_state):
+    return all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
 
 def add_contact_ui(public_id):
     msg, success = app_state.contact_manager.add_contact(public_id)
@@ -593,6 +604,7 @@ def main():
     with gr.Blocks(theme=gr.themes.Soft(), title="Aetherium Q-Com") as demo:
         gr.Markdown("# Aetherium Q-Com")
         all_chat_histories = gr.State({})
+        chat_update_trigger = gr.Textbox(visible=False)
 
         with gr.Tabs():
             with gr.TabItem("Network & P2P"):
@@ -665,8 +677,15 @@ def main():
         crypto_decrypt_btn.click(decrypt_ui, [crypto_out_cipher, crypto_in_key], [crypto_in_plain])
 
         timer = gr.Timer(1, active=False)
-        timer.tick(update_ui_loop, None, [log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector]).then(
-            change_active_chat, [p2p_chat_selector, all_chat_histories, p2p_chat_output], [p2p_chat_output]
+        timer.tick(
+            update_ui_loop,
+            inputs=[p2p_chat_selector, all_chat_histories],
+            outputs=[log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector, chat_update_trigger]
+        )
+        chat_update_trigger.change(
+            change_active_chat,
+            inputs=[p2p_chat_selector, all_chat_histories],
+            outputs=[p2p_chat_output]
         )
         demo.load(lambda: gr.Timer(active=True), None, outputs=timer)
 
