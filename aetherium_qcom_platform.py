@@ -596,7 +596,21 @@ def decrypt_ui(ciphertext, key):
         return get_crypto_suite(key).decrypt(ciphertext)
     except Exception as e:
         app_state.log(f"Offline decrypt error: {e}"); return f"DECRYPTION FAILED: {e}"
-        
+
+def encrypt(message, key):
+    seed_hash = hashlib.sha256(key.encode()).hexdigest()
+    secure_seed = int(seed_hash, 16) / (2**256)
+    crypto_suite = QuantumSentryCryptography(secure_key_seed=secure_seed)
+    encrypted_message = "/".join( crypto_suite.encrypt(message), secure_seed)
+    return encrypted_message
+
+def decrypt(cipher, key):
+    encrypted_message = cipher.split("/")[0]
+    secure_seed = cipher.split("/")[1]
+    crypto_suite = QuantumSentryCryptography(secure_key_seed=secure_seed)
+    message = crypto_suite.decrypt(encrypted_message)
+    return message
+
 def main():
     DependencyManager.ensure_dependencies()
     app_state.node.start()
