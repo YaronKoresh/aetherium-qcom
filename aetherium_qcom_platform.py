@@ -30,8 +30,7 @@ class DependencyManager:
             print("All dependencies are satisfied.")
             return
 
-        print(f"Missing dependencies: {', '.join(missing_packages)}. Please install them using 'pip install {' '.join(missing_packages)}'")
-        sys.exit(1)
+        os.system(f"pip install {' '.join(missing_packages)}")
 
 class Config:
     NUM_PULSES = 10000
