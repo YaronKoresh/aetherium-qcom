@@ -522,7 +522,7 @@ def update_ui_loop():
                     app_state.log(f"P2P Decrypt Error from '{peer_username}': {e}")
 
     chat_histories = {un: chat['history'] for un, chat in app_state.p2p_chats.items()}
-    return app_state.system_log, gr.update(choices=list(app_state.contact_manager.contacts.keys())), chat_histories, list(app_state.p2p_chats.keys())
+    return app_state.system_log, gr.update(choices=list(app_state.contact_manager.contacts.keys())), chat_histories, gr.update(choices=list(app_state.p2p_chats.keys()))
 
 def connect_p2p(peer_ip, peer_username):
     if not peer_ip or not peer_username: return "Peer IP and Username are required.", gr.update()
