@@ -10,12 +10,6 @@ import queue
 import threading
 import socket
 import platform
-import wmi
-import gradio as gr
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, padding
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
 
 def get_source_code_hash():
     file_path = os.path.realpath(__file__)
@@ -48,6 +42,13 @@ class DependencyManager:
             sys.exit(1)
 
 DependencyManager.ensure_dependencies()
+
+import wmi
+import gradio as gr
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
 class Config:
     DEFAULT_PORT = 65123
