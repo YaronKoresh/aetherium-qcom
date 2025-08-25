@@ -1132,7 +1132,7 @@ def main():
                             send_file_btn = gr.Button("Send File")
 
             with gr.TabItem("Key Management"):
-                gr.Markdown("## Manage One-Time Pad Keys")
+                gr.Markdown("## Manage Keys")
                 gr.Markdown("OTP keys must be pre-shared physically (e.g., via USB drive).")
                 with gr.Row():
                     with gr.Column():
@@ -1191,7 +1191,7 @@ def main():
                 permission_status = gr.Textbox(label="Permission Status", interactive=False)
 
             with gr.TabItem("Offline Cryptography"):
-                gr.Markdown("## One-Time Pad Encryption/Decryption")
+                gr.Markdown("## Encryption/Decryption")
                 with gr.Row():
                     with gr.Column():
                         gr.Markdown("### Encrypt")
