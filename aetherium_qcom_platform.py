@@ -541,7 +541,7 @@ def send_p2p_message_ui(message, current_peer):
 def change_active_chat(peer_username, all_histories_state):
     new_chat_content = all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
     if new_chat_content == current_chat_content:
-        return gr.update() # This tells Gradio: "No changes, do not re-render"
+        return gr.update()
     return new_chat_content
 
 def add_contact_ui(public_id):
@@ -667,7 +667,7 @@ def main():
 
         timer = gr.Timer(1, active=False)
         timer.tick(update_ui_loop, None, [log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector]).then(
-            change_active_chat, [p2p_chat_selector, all_chat_histories], [p2p_chat_output]
+            change_active_chat, [p2p_chat_selector, all_chat_histories, p2p_chat_output], [p2p_chat_output]
         )
         demo.load(lambda: gr.Timer(active=True), None, outputs=timer)
 
