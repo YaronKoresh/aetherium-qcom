@@ -691,8 +691,9 @@ def main():
             lambda: "[System] Select a peer to view chat history.", None, [p2p_chat_output]
         )
 
-    demo.launch()
+    demo.launch(inbrowser=True)
     app_state.node.stop()
 
 if __name__ == "__main__":
     main()
+
