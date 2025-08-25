@@ -23,6 +23,8 @@ def get_source_code_hash():
             hasher.update(chunk)
     return hasher.hexdigest()
 
+SOURCE_HASH = get_source_code_hash()
+
 class DependencyManager:
     REQUIRED_PACKAGES = ['numpy', 'Pillow', 'gradio', 'requests']
 
@@ -316,7 +318,7 @@ class KademliaDHT:
         return self.storage.get(public_id)
 
 class Node:
-    def __init__(self, config, identity_manager, contact_manager, key_manager, log_queue, event_queue):
+    def __init__(self, config, identity_manager, contact_manager, key_manager, log_queue, event_queue, source_hash):
         self.config = config
         self.identity = identity_manager
         self.contacts = contact_manager
@@ -329,7 +331,7 @@ class Node:
         self.offline_crypto_suite = QuantumSentryCryptography()
         self.local_discovery = P2PDiscovery(self.identity, self.log)
         self.dht_node = KademliaDHT(self.log, self.identity)
-        self.source_code_hash = app_state.source_code_hash
+        self.source_code_hash = source_hash
 
     def log(self, message): self.log_queue.put(f"[Node] {message}")
 
@@ -535,11 +537,11 @@ class AppState:
         self.log_queue = queue.Queue()
         self.event_queue = queue.Queue()
         self.system_log = ""
-        self.source_code_hash = get_source_code_hash()
+        self.source_code_hash = SOURCE_HASH
         self.identity_manager = IdentityManager(self.log)
         self.contact_manager = ContactManager(self.log, self.identity_manager)
         self.key_manager = KeyManager(self.log)
-        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.key_manager, self.log_queue, self.event_queue)
+        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.key_manager, self.log_queue, self.event_queue, self.source_code_hash)
         self.offline_crypto_suite = QuantumSentryCryptography()
         self.p2p_chats = {}
 
