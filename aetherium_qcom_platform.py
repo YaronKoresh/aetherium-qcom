@@ -406,6 +406,12 @@ class Node:
             outcome = random.choice(['Psi-', 'Psi+', 'Phi-', 'Phi+']) if success else None
             results.append({'success': success, 'outcome': outcome, 'bit_other': peer_pulse['bit'] if success else -1, 'timestamp': pulse_data['timestamp']})
             if not self.send_json(conn, {'bsm_result': {'success': success, 'outcome': outcome, 'bit_other': pulse_data['bit'] if success else -1, 'timestamp': peer_pulse['timestamp']}}): break
+
+            peer_bsm_data = self.recv_json(conn)
+            if not peer_bsm_data or 'bsm_result' not in peer_bsm_data:
+                self.log("Protocol error: Did not receive peer BSM data.")
+                break
+
             if (i + 1) % self.config.EPOCH_SIZE == 0:
                 if not self.send_json(conn, {'bases': engine.bases[-self.config.EPOCH_SIZE:]}): break
                 peer_bases_data = self.recv_json(conn)
