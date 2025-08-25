@@ -687,7 +687,9 @@ def main():
             inputs=[p2p_chat_selector, all_chat_histories],
             outputs=[p2p_chat_output]
         )
-        demo.load(lambda: gr.Timer(active=True), None, outputs=timer)
+        demo.load(lambda: gr.Timer(active=True), None, outputs=timer).then(
+            lambda: "[System] Select a peer to view chat history.", None, [p2p_chat_output]
+        )
 
     demo.launch()
     app_state.node.stop()
