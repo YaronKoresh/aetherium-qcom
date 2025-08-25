@@ -662,9 +662,11 @@ def main():
         crypto_encrypt_btn.click(encrypt_ui, [crypto_in_plain, crypto_in_key], [crypto_out_cipher])
         crypto_decrypt_btn.click(decrypt_ui, [crypto_out_cipher, crypto_in_key], [crypto_in_plain])
 
-        demo.load(update_ui_loop, None, [log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector], every=1).then(
+        timer = gr.Timer(1, active=False)
+        timer.tick(update_ui_loop, None, [log_output, p2p_contact_selector, all_chat_histories, p2p_chat_selector]).then(
             change_active_chat, [p2p_chat_selector, all_chat_histories], [p2p_chat_output]
         )
+        demo.load(lambda: gr.Timer(active=True), None, outputs=timer)
 
     demo.launch()
     app_state.node.stop()
