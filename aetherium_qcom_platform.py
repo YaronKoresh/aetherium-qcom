@@ -12,8 +12,6 @@ import queue
 import hashlib
 import os
 import base64
-import gradio as gr
-from PIL import Image
 import io
 
 class DependencyManager:
@@ -38,6 +36,11 @@ class DependencyManager:
         except subprocess.CalledProcessError as e:
             print(f"Error installing packages: {e}")
             sys.exit(1)
+
+DependencyManager.ensure_dependencies()
+
+import gradio as gr
+from PIL import Image
 
 class Config:
     NUM_PULSES = 10000
@@ -538,11 +541,13 @@ def update_ui_loop(current_peer, previous_histories):
     )
 
 def connect_p2p(peer_ip, peer_username):
-    if not peer_ip or not peer_username: return "Peer IP and Username are required.", gr.update()
+    if not peer_ip or not peer_username:
+        return "Peer IP and Username are required.", gr.update()
     app_state.log(f"Initiating P2P session with '{peer_username}' at {peer_ip}")
     threading.Thread(target=app_state.node.initiate_p2p_session, args=(peer_ip, peer_username)).start()
     app_state.add_p2p_chat(peer_username, f"[System] Connecting to '{peer_username}'...\n")
-    return f"Connecting to {peer_username}...", gr.update(value=peer_username)
+    new_chat_choices = list(app_state.p2p_chats.keys())
+    return f"Connecting to {peer_username}...", gr.update(choices=new_chat_choices, value=peer_username)
 
 def send_p2p_message_ui(message, current_peer):
     if not message or not current_peer: return ""
@@ -554,13 +559,26 @@ def send_p2p_message_ui(message, current_peer):
 def change_active_chat(peer_username, all_histories_state):
     return all_histories_state.get(peer_username, "[System] Select a peer to view chat history.")
 
-def add_contact_ui(public_id):
-    msg, success = app_state.contact_manager.add_contact(public_id)
-    return msg, gr.update(choices=list(app_state.contact_manager.contacts.keys()))
+def add_contact_ui(public_ids_str):
+    messages = []
+    ids_to_process = [pid.strip() for pid in public_ids_str.splitlines() if pid.strip()]
 
-def get_contact_username_for_id(public_id):
-    if not public_id or len(public_id) != 64: return "[Enter a valid Public ID above]"
-    return app_state.identity_manager.generate_username_from_id(public_id)
+    if not ids_to_process:
+        return "Public ID input is empty.", gr.update()
+
+    for pid in ids_to_process:
+        msg, _ = app_state.contact_manager.add_contact(pid)
+        messages.append(msg)
+    
+    return "\n".join(messages), gr.update(choices=list(app_state.contact_manager.contacts.keys()))
+
+def get_contact_username_for_id(public_ids_str):
+    if not public_ids_str:
+        return "[Enter a valid Public ID above]"
+    first_id = public_ids_str.splitlines()[0].strip()
+    if not first_id or len(first_id) != 64:
+        return "[Enter a valid Public ID above]"
+    return app_state.identity_manager.generate_username_from_id(first_id)
 
 def steg_embed_ui(cover_image, secret_message):
     if cover_image is None or not secret_message: return None, "Error: Cover image and secret message are required."
@@ -644,9 +662,9 @@ def main():
                     with gr.Column():
                         gr.Markdown("## Manage Contacts")
                         contact_status = gr.Textbox(label="Status", interactive=False)
-                        contact_public_id = gr.Textbox(label="Contact's Full Public ID")
-                        contact_generated_username = gr.Textbox(label="Generated Username", interactive=False)
-                        add_contact_btn = gr.Button("Add/Update Contact")
+                        contact_public_id = gr.Textbox(label="Contact's Full Public ID(s) (one per line)", lines=3)
+                        contact_generated_username = gr.Textbox(label="Generated Username (from first ID)", interactive=False)
+                        add_contact_btn = gr.Button("Add/Update Contact(s)")
                         
             with gr.TabItem("Offline Tools"):
                 with gr.Row():
