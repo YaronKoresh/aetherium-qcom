@@ -104,13 +104,8 @@ class MediaSteganographyManager:
         self.shared_secret = shared_secret.encode('utf-8')
 
     def _get_seed(self, carrier_path: str) -> bytes:
-        carrier_hash = hashlib.sha256()
-        with open(carrier_path, 'rb') as f:
-            while chunk := f.read(4096):
-                carrier_hash.update(chunk)
-        
-        combined_seed = carrier_hash.digest() + self.shared_secret
-        return hashlib.sha256(combined_seed).digest()
+        return hashlib.sha256(self.shared_secret).digest()
+
 
     def _get_pixel_sequence(self, seed: bytes, width: int, height: int, num_pixels: int):
         rng = random.Random(seed)
