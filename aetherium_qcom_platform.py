@@ -160,7 +160,7 @@ class MediaSteganographyManager:
             
             pixels[x, y] = (r, g, b)
 
-        output_path = f"invitation_{os.path.basename(image_path)}.png"
+        output_path = f"{os.path.splitext(os.path.basename(image_path))[0]}.png"
         img.save(output_path, "PNG")
         return output_path
 
@@ -180,7 +180,7 @@ class MediaSteganographyManager:
         seed = self._get_seed(video_path)
         frame_indices_to_modify = self._get_frame_sequence(seed, total_frames, required_frames)
         
-        output_path = f"invitation_{os.path.basename(video_path)}.mp4"
+        output_path = f"{os.path.splitext(os.path.basename(video_path))[0]}.mp4"
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
