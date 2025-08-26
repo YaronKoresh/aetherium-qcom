@@ -1318,21 +1318,42 @@ def get_local_ip():
     finally: s.close()
     return IP
 
+def get_public_ip(log_callback):
+    ip_services = ["https://checkip.amazonaws.com", "https://api.ipify.org"]
+    for service in ip_services:
+        try:
+            log_callback(f"Fetching public IP address from {service}...")
+            with urllib.request.urlopen(service, timeout=5) as response:
+                # .strip() is important as some services might add newlines
+                public_ip = response.read().decode('utf-8').strip()
+                log_callback(f"Successfully found public IP: {public_ip}")
+                return public_ip
+        except Exception as e:
+            log_callback(f"WARNING: Failed to get public IP from {service}: {e}")
+    return None
+
 def create_invitation_ui(carrier_file, secret_phrase):
     if carrier_file is None or not secret_phrase:
         return None, "Please upload a carrier file and provide a secret phrase."
     
     try:
+        local_ip = get_local_ip()
+        public_ip = get_public_ip(app_state.log)
+
+        if not public_ip:
+            app_state.log("WARNING: Could not determine public IP. Invitation may only work on a local network.")
+        
         steg_manager = MediaSteganographyManager(secret_phrase)
         data_to_hide = {
-            "ip": get_local_ip(),
+            "public_ip": public_ip,
+            "local_ip": local_ip,
             "port": app_state.node.listening_port,
             "public_id": app_state.identity_manager.public_id,
             "public_key": app_state.node.get_my_public_key_pem()
         }
         output_path = steg_manager.embed(carrier_file.name, data_to_hide)
-        app_state.log(f"Invitation created: {output_path}. Send this file to your contact.")
-        return output_path, f"Invitation file created: {os.path.basename(output_path)}. Send this to your contact and tell them to use the same secret phrase."
+        app_state.log(f"Invitation created embedding Public IP ({public_ip}) and Local IP ({local_ip}).")
+        return output_path, f"Invitation file created: {os.path.basename(output_path)}. Send this to your contact."
     except Exception as e:
         app_state.log(f"ERROR creating invitation: {e}")
         return None, f"Error: {e}"
@@ -1345,16 +1366,34 @@ def use_invitation_ui(invitation_file, secret_phrase):
         steg_manager = MediaSteganographyManager(secret_phrase)
         extracted_data = steg_manager.extract(invitation_file.name)
         
-        peer_ip = extracted_data.get("ip")
+        host_public_ip = extracted_data.get("public_ip")
+        host_local_ip = extracted_data.get("local_ip")
         peer_port = extracted_data.get("port")
         peer_public_id = extracted_data.get("public_id")
         peer_public_key = extracted_data.get("public_key")
 
-        if not all([peer_ip, peer_port, peer_public_id, peer_public_key]):
+        if not all([host_local_ip, peer_port, peer_public_id, peer_public_key]):
             return "Invitation file is invalid or corrupted."
 
-        threading.Thread(target=app_state.node.initiate_direct_session, args=(peer_ip, peer_port, peer_public_id, peer_public_key)).start()
-        return f"Invitation decoded. Attempting to connect to {peer_ip}:{peer_port}..."
+        my_public_ip = get_public_ip(app_state.log)
+        
+        ip_to_use = host_public_ip
+        
+        if my_public_ip and host_public_ip and my_public_ip == host_public_ip:
+            app_state.log("Public IPs match. Assuming local network connection.")
+            ip_to_use = host_local_ip
+        elif not host_public_ip:
+             app_state.log("Host's public IP not available in invitation. Trying local IP.")
+             ip_to_use = host_local_ip
+        else:
+            app_state.log("Public IPs do not match. Assuming remote network connection.")
+            ip_to_use = host_public_ip
+
+        if not ip_to_use:
+            return "Could not determine a valid IP address to connect to from the invitation."
+
+        threading.Thread(target=app_state.node.initiate_direct_session, args=(ip_to_use, peer_port, peer_public_id, peer_public_key)).start()
+        return f"Invitation decoded. Automatically attempting to connect to {ip_to_use}:{peer_port}..."
 
     except Exception as e:
         app_state.log(f"ERROR using invitation: {e}")
