@@ -48,7 +48,7 @@ class DependencyManager:
             return
         print(f"Installing missing packages: {', '.join(missing_packages)}")
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", *missing_packages])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", *missing_packages])
         except subprocess.CalledProcessError:
             print("ERROR: Could not install dependencies. Please install them manually and restart.")
             sys.exit(1)
