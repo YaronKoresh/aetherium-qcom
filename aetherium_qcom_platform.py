@@ -1216,7 +1216,7 @@ def main():
         
         chat_input.submit(send_message_ui, [chat_input, chat_selector], [chat_input])
         send_file_btn.click(send_file_ui, [file_to_send, chat_selector], None)
-        chat_selector.change(change_active_chat, [chat_selector, p2p_chat_histories, group_histories], [chat_output])
+        chat_selector.change(change_active_chat, [chat_selector, p2p_chat_histories, group_chat_histories], [chat_output])
         
         create_group_btn.click(create_group_ui, [group_name_input, group_members_input], [group_status_box, chat_selector])
         
