@@ -327,7 +327,7 @@ class MiniDHT(asyncio.Protocol):
         await asyncio.gather(*tasks)
 
 class Config:
-    UNSUSPICIOUS_PORTS = [443, 80]
+    UNSUSPICIOUS_PORTS = [8080, 8443, 443, 80, 5000, 8888, 9000]
     BLOCKED_MACHINES_FILE = "blocked_machines.json"
     GROUP_SETTINGS_FILE = "group_settings.json"
     DH_PARAMETERS = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
@@ -806,7 +806,7 @@ class Node:
         await dht_node.listen()
         await dht_node.bootstrap(bootstrap_nodes)
         self.log("Connected to the DHT network.")
-        rendezvous_key = hashlib.sha256(passphrase.encode()).digest()
+        rendezvous_key = hashlib.pbkdf2_hmac('sha256', passphrase.encode(), b'aetherium_rendezvous_salt', 100_000, dklen=20)
         self.log("Searching for peer on the DHT...")
         self.event_queue.put({'type': 'update_status', 'data': 'Searching for peer... (this can take up to 60 seconds)'})
         found_value = await dht_node.get(rendezvous_key)
@@ -824,16 +824,9 @@ class Node:
         else:
             self.log("Peer not found. Announcing our presence on the DHT.")
             self.event_queue.put({'type': 'update_status', 'data': 'Peer not found. Announcing and waiting...'})
-            
-            upnp = NativeUPnP(log_callback=self.log)
-            if upnp.add_port_mapping(self.listening_port, 'TCP', 'Aetherium Q-Com'):
-                self.log("Native UPnP success: Port should be open.")
-            else:
-                self.log("Native UPnP failed: Manual port forwarding may be required for internet connections.")
-
             my_public_ip = "127.0.0.1"
             try:
-                with urllib.request.urlopen("https://api.ipify.org", timeout=5) as response:
+                with urllib.request.urlopen("https://api.ipify.org") as response:
                     my_public_ip = response.read().decode('utf-8')
             except Exception as e:
                 self.log(f"Could not determine public IP via api.ipify.org: {e}. Connection may fail if not on LAN.")
@@ -1068,7 +1061,7 @@ def main():
         timer.tick(
             update_ui_loop,
             inputs=[chat_selector, p2p_chat_histories, group_chat_histories],
-            outputs=[log_output, connection_status_output, p2p_chat_histories, new_group_histories, chat_selector, chat_update_trigger]
+            outputs=[log_output, connection_status_output, p2p_chat_histories, group_chat_histories, chat_selector, chat_update_trigger]
         )
         chat_update_trigger.change(
             change_active_chat,
