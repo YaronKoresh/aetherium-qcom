@@ -29,7 +29,7 @@ SOURCE_CODE_BYTES = get_source_code_hash(full_code=True)
 SOURCE_HASH = hashlib.sha256(SOURCE_CODE_BYTES).hexdigest()
 
 class DependencyManager:
-    REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy==1.26.4', 'scikit-learn', 'pandas']
+    REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy==1.26.4', 'scikit-learn', 'pandas==2.2.1']
     if platform.system() == "Windows":
         REQUIRED_PACKAGES.append('wmi')
     
