@@ -15,19 +15,21 @@ from collections import deque, OrderedDict
 import asyncio
 import urllib.request
 import xml.etree.ElementTree as ET
+from enum import Enum
 
-def get_source_code_hash():
+def get_source_code_hash(full_code=False):
     file_path = os.path.realpath(__file__)
-    hasher = hashlib.sha256()
     with open(file_path, 'rb') as f:
-        while chunk := f.read(4096):
-            hasher.update(chunk)
-    return hasher.hexdigest()
+        code_bytes = f.read()
+    if full_code:
+        return code_bytes
+    return hashlib.sha256(code_bytes).hexdigest()
 
-SOURCE_HASH = get_source_code_hash()
+SOURCE_CODE_BYTES = get_source_code_hash(full_code=True)
+SOURCE_HASH = hashlib.sha256(SOURCE_CODE_BYTES).hexdigest()
 
 class DependencyManager:
-    REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy']
+    REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy', 'scikit-learn']
     if platform.system() == "Windows":
         REQUIRED_PACKAGES.append('wmi')
     
@@ -38,6 +40,7 @@ class DependencyManager:
             try:
                 if package == 'Pillow': __import__('PIL')
                 elif package == 'opencv-python': __import__('cv2')
+                elif package == 'scikit-learn': __import__('sklearn')
                 else: __import__(package.split('>')[0].split('=')[0])
             except ImportError:
                 missing_packages.append(package)
@@ -64,6 +67,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from sklearn.ensemble import IsolationForest
+from sklearn.mixture import GaussianMixture
 
 class NativeUPnP:
     def __init__(self, log_callback=print):
@@ -327,7 +332,7 @@ class MiniDHT(asyncio.Protocol):
         await asyncio.gather(*tasks)
 
 class Config:
-    UNSUSPICIOUS_PORTS = [8080, 8443, 443, 80, 5000, 8888, 9000]
+    UNSUSPICIOUS_PORTS = list(range(49152, 65536))
     BLOCKED_MACHINES_FILE = "blocked_machines.json"
     GROUP_SETTINGS_FILE = "group_settings.json"
     DH_PARAMETERS = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
@@ -391,7 +396,24 @@ class MachineFingerprintManager:
     def __init__(self, log_callback):
         self.log = log_callback
         self.fingerprint = self._get_machine_fingerprint()
-        self.log(f"Machine fingerprint loaded: {self.fingerprint[:12]}...")
+        self.is_vm = self._check_for_vm()
+        log_msg = f"Machine fingerprint loaded: {self.fingerprint[:12]}..."
+        if self.is_vm:
+            log_msg += " (Warning: Virtual Machine detected)"
+        self.log(log_msg)
+
+    def _check_for_vm(self):
+        vm_identifiers = ['vmware', 'virtualbox', 'qemu', 'xen', 'hyper-v']
+        try:
+            if platform.system() == "Windows" and 'wmi' in sys.modules:
+                c = wmi.WMI()
+                for s in c.Win32_ComputerSystem():
+                    if s.Model and any(vm_id in s.Model.lower() for vm_id in vm_identifiers):
+                        return True
+        except Exception:
+            return False
+        return False
+
     def _get_machine_fingerprint(self):
         system = platform.system()
         identifiers = []
@@ -496,6 +518,250 @@ class GroupChatManager:
     def get_group_members(self, group_name):
         return self.groups.get(group_name, [])
 
+class MediaSteganographyManager:
+    def __init__(self, shared_secret: str):
+        if not shared_secret:
+            raise ValueError("A shared secret is required for steganography.")
+        self.shared_secret = shared_secret.encode('utf-8')
+
+    def _get_seed(self, carrier_path: str) -> bytes:
+        return hashlib.sha256(self.shared_secret).digest()
+
+    def _get_pixel_sequence(self, seed: bytes, width: int, height: int, num_pixels: int):
+        rng = random.Random(seed)
+        total_pixels = width * height
+        if num_pixels > total_pixels:
+            raise ValueError("Not enough pixels in the image/frame to store the data.")
+        
+        all_indices = list(range(total_pixels))
+        rng.shuffle(all_indices)
+        
+        for i in range(num_pixels):
+            index = all_indices[i]
+            x = index % width
+            y = index // width
+            yield (x, y)
+            
+    def _get_frame_sequence(self, seed: bytes, total_frames: int, num_frames: int):
+        rng = random.Random(seed)
+        if num_frames > total_frames:
+            raise ValueError("Not enough frames in the video to store the data.")
+        
+        all_indices = list(range(total_frames))
+        rng.shuffle(all_indices)
+        return sorted(all_indices[:num_frames])
+
+    def _embed_in_image(self, image_path: str, payload_bits: str) -> str:
+        img = Image.open(image_path).convert('RGB')
+        width, height = img.size
+        required_pixels = math.ceil(len(payload_bits) / 3)
+        
+        seed = self._get_seed(image_path)
+        pixel_sequence = self._get_pixel_sequence(seed, width, height, required_pixels)
+        
+        pixels = img.load()
+        bit_index = 0
+        
+        for x, y in pixel_sequence:
+            if bit_index >= len(payload_bits): break
+            r, g, b = pixels[x, y]
+            
+            if bit_index < len(payload_bits):
+                r = (r & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
+            if bit_index < len(payload_bits):
+                g = (g & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
+            if bit_index < len(payload_bits):
+                b = (b & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
+            
+            pixels[x, y] = (r, g, b)
+
+        output_path = f"{os.path.splitext(os.path.basename(image_path))[0]}_invite.png"
+        img.save(output_path, "PNG")
+        return output_path
+
+    def _embed_in_video(self, video_path: str, payload_bits: str) -> str:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): raise RuntimeError("Could not open video file.")
+        
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        
+        pixels_per_frame = width * height
+        bits_per_frame = pixels_per_frame * 3
+        required_frames = math.ceil(len(payload_bits) / bits_per_frame)
+        
+        seed = self._get_seed(video_path)
+        frame_indices_to_modify = self._get_frame_sequence(seed, total_frames, required_frames)
+        
+        output_path = f"{os.path.splitext(os.path.basename(video_path))[0]}_invite.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+        frame_num = 0
+        bits_embedded = 0
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret: break
+
+            if frame_num in frame_indices_to_modify:
+                bits_for_this_frame = payload_bits[bits_embedded : bits_embedded + bits_per_frame]
+                
+                required_pixels = math.ceil(len(bits_for_this_frame) / 3)
+                pixel_sequence = self._get_pixel_sequence(seed + frame_num.to_bytes(4,'big'), width, height, required_pixels)
+                
+                bit_index = 0
+                for x, y in pixel_sequence:
+                    if bit_index >= len(bits_for_this_frame): break
+                    
+                    b, g, r = frame[y, x]
+                    if bit_index < len(bits_for_this_frame):
+                        b = (b & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
+                    if bit_index < len(bits_for_this_frame):
+                        g = (g & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
+                    if bit_index < len(bits_for_this_frame):
+                        r = (r & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
+                    frame[y, x] = [b, g, r]
+                
+                bits_embedded += len(bits_for_this_frame)
+
+            out.write(frame)
+            frame_num += 1
+            
+        cap.release()
+        out.release()
+        return output_path
+
+    def embed(self, carrier_path: str, data: dict) -> str:
+        try:
+            data_json = json.dumps(data).encode('utf-8')
+            key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
+            aesgcm = AESGCM(key)
+            nonce = os.urandom(12)
+            encrypted_data = nonce + aesgcm.encrypt(nonce, data_json, None)
+
+            payload = len(encrypted_data).to_bytes(4, 'big') + encrypted_data
+            payload_bits = ''.join(format(byte, '08b') for byte in payload)
+            
+            _, ext = os.path.splitext(carrier_path.lower())
+            if ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                return self._embed_in_image(carrier_path, payload_bits)
+            elif ext in ['.mp4', '.mov', '.avi']:
+                return self._embed_in_video(carrier_path, payload_bits)
+            else:
+                raise ValueError("Unsupported file type for steganography. Use an image or video.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to embed data: {e}")
+
+    def _extract_from_image(self, image_path: str) -> dict:
+        img = Image.open(image_path).convert('RGB')
+        width, height = img.size
+        pixels = img.load()
+        seed = self._get_seed(image_path)
+        
+        header_bits = ""
+        header_pixels = math.ceil(32 / 3)
+        pixel_sequence_header = self._get_pixel_sequence(seed, width, height, header_pixels)
+        for x, y in pixel_sequence_header:
+            r, g, b = pixels[x, y]
+            header_bits += str(r & 1) + str(g & 1) + str(b & 1)
+            if len(header_bits) >= 32: break
+        
+        data_len_bytes = int(header_bits[:32], 2)
+        
+        total_bits_to_extract = 32 + (data_len_bytes * 8)
+        required_pixels = math.ceil(total_bits_to_extract / 3)
+        pixel_sequence_full = self._get_pixel_sequence(seed, width, height, required_pixels)
+        
+        extracted_bits = ""
+        for x, y in pixel_sequence_full:
+            r, g, b = pixels[x, y]
+            extracted_bits += str(r & 1) + str(g & 1) + str(b & 1)
+
+        payload_bits = extracted_bits[:total_bits_to_extract]
+        payload_bytes_list = [payload_bits[i:i+8] for i in range(32, len(payload_bits), 8)]
+        encrypted_data = bytes([int(b, 2) for b in payload_bytes_list])
+        
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
+        aesgcm = AESGCM(key)
+        nonce = encrypted_data[:12]
+        ciphertext = encrypted_data[12:]
+        decrypted_json = aesgcm.decrypt(nonce, ciphertext, None)
+        return json.loads(decrypted_json)
+
+    def _extract_from_video(self, video_path: str) -> dict:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened(): raise RuntimeError("Could not open video file.")
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        seed = self._get_seed(video_path)
+
+        header_bits = ""
+        pixels_per_frame = width * height
+        bits_per_frame = pixels_per_frame * 3
+        
+        header_frames_count = math.ceil( (32/3) / pixels_per_frame ) + 1
+        frame_indices_header = self._get_frame_sequence(seed, total_frames, header_frames_count)
+        
+        for frame_index in frame_indices_header:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ret, frame = cap.read()
+            if not ret: continue
+
+            pixel_sequence = self._get_pixel_sequence(seed + frame_index.to_bytes(4,'big'), width, height, pixels_per_frame)
+            for x,y in pixel_sequence:
+                if len(header_bits) >= 32: break
+                b, g, r = frame[y, x]
+                header_bits += str(b & 1) + str(g & 1) + str(r & 1)
+            if len(header_bits) >= 32: break
+
+        data_len_bytes = int(header_bits[:32], 2)
+        total_bits_to_extract = 32 + (data_len_bytes * 8)
+        required_frames = math.ceil(total_bits_to_extract / bits_per_frame)
+        frame_indices_full = self._get_frame_sequence(seed, total_frames, required_frames)
+        
+        extracted_bits = ""
+        for frame_index in frame_indices_full:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+            ret, frame = cap.read()
+            if not ret: continue
+            
+            pixel_sequence = self._get_pixel_sequence(seed + frame_index.to_bytes(4,'big'), width, height, pixels_per_frame)
+            for x, y in pixel_sequence:
+                if len(extracted_bits) >= total_bits_to_extract: break
+                b, g, r = frame[y, x]
+                extracted_bits += str(b & 1) + str(g & 1) + str(r & 1)
+            if len(extracted_bits) >= total_bits_to_extract: break
+        
+        cap.release()
+
+        payload_bits = extracted_bits[:total_bits_to_extract]
+        payload_bytes_list = [payload_bits[i:i+8] for i in range(32, len(payload_bits), 8)]
+        encrypted_data = bytes([int(b, 2) for b in payload_bytes_list])
+
+        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
+        aesgcm = AESGCM(key)
+        nonce = encrypted_data[:12]
+        ciphertext = encrypted_data[12:]
+        decrypted_json = aesgcm.decrypt(nonce, ciphertext, None)
+        return json.loads(decrypted_json)
+        
+    def extract(self, carrier_path: str) -> dict:
+        try:
+            _, ext = os.path.splitext(carrier_path.lower())
+            if ext in ['.png', '.jpg', '.jpeg', '.bmp']:
+                return self._extract_from_image(carrier_path)
+            elif ext in ['.mp4', '.mov', '.avi']:
+                return self._extract_from_video(carrier_path)
+            else:
+                raise ValueError("Unsupported file type for steganography. Use an image or video.")
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract data. Is the secret phrase correct? Error: {e}")
+
 class QuantumSentryCryptography:
     def encrypt(self, plaintext_or_bytes, key):
         if not key: raise ValueError("Key cannot be empty.")
@@ -513,8 +779,9 @@ class QuantumSentryCryptography:
         return decrypted_bytes
 
 class KeyStreamGenerator:
-    def __init__(self, shared_secret):
-        self.hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'aetherium-qcom-key-stream', backend=default_backend())
+    def __init__(self, shared_secret, machine_fingerprint):
+        info_str = b'aetherium-qcom-key-stream' + machine_fingerprint.encode('utf-8')
+        self.hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info_str, backend=default_backend())
         self.seed = self.hkdf.derive(shared_secret)
         self.counter = 0
     def get_bytes(self, num_bytes):
@@ -525,22 +792,65 @@ class KeyStreamGenerator:
             self.counter += 1
         return key_material[:num_bytes]
 
-class AnomalyDetector:
+class SecurityTier(Enum):
+    NORMAL = 0
+    INTEGRITY_PROOF_FAILED = 1
+    SUSPICIOUS_TIMING = 2
+    UNUSUAL_PAYLOAD = 3
+    VM_DETECTED = 4
+
+class SecurityMonitor:
     def __init__(self, log_callback):
         self.log = log_callback
-        self.message_timestamps = deque(maxlen=20)
-        self.min_delay = 0.1
-        self.alert_threshold = 5
-    def check_anomaly(self):
-        now = time.time()
-        self.message_timestamps.append(now)
-        if len(self.message_timestamps) > self.alert_threshold:
-            time_span = self.message_timestamps[-1] - self.message_timestamps[-self.alert_threshold]
-            if time_span < (self.alert_threshold * self.min_delay):
-                self.log(f"SECURITY ALERT: Anomaly detected! Received {self.alert_threshold} messages in {time_span:.2f} seconds. Possible bot activity.")
-                self.message_timestamps.clear()
-                return True
-        return False
+        self.last_timestamp = None
+        self.is_calibrated = False
+        self.trust_score = 100
+        self.timing_model = GaussianMixture(n_components=2, random_state=42)
+        self.payload_model = IsolationForest(contamination=0.05, random_state=42)
+
+    def _extract_features(self, message_dict):
+        current_time = time.time()
+        inter_arrival_time = current_time - self.last_timestamp if self.last_timestamp else 0
+        self.last_timestamp = current_time
+        timing_features = [inter_arrival_time]
+        
+        message_size = len(message_dict.get('data', ''))
+        payload_complexity = len(message_dict.keys())
+        payload_features = [inter_arrival_time, message_size, payload_complexity]
+
+        return timing_features, payload_features
+
+    def calibrate(self, calibration_packets):
+        self.log("Performing security calibration with peer...")
+        timing_feature_buffer = [self._extract_features(p)[0] for p in calibration_packets]
+        payload_feature_buffer = [self._extract_features(p)[1] for p in calibration_packets]
+        
+        self.timing_model.fit(np.array(timing_feature_buffer))
+        self.payload_model.fit(np.array(payload_feature_buffer))
+        
+        self.is_calibrated = True
+        self.log("✅ Security models are calibrated and active.")
+
+    def analyze_packet(self, message_dict, is_peer_on_vm):
+        if not self.is_calibrated: return SecurityTier.NORMAL
+
+        if is_peer_on_vm: self.trust_score -= 1
+
+        timing_features, payload_features = self._extract_features(message_dict)
+
+        timing_score = self.timing_model.score_samples(np.array([timing_features]))[0]
+        if timing_score < -5:
+            self.log(f"SECURITY ALERT: Atypical message timing detected (possible bot). Score: {timing_score:.3f}")
+            self.trust_score -= 25
+            return SecurityTier.SUSPICIOUS_TIMING
+
+        payload_prediction = self.payload_model.predict(np.array([payload_features]))
+        if payload_prediction[0] == -1:
+            self.log(f"SECURITY ALERT: Anomalous message payload detected.")
+            self.trust_score -= 15
+            return SecurityTier.UNUSUAL_PAYLOAD
+            
+        return SecurityTier.NORMAL
 
 class BlockManager:
     def __init__(self, log_callback):
@@ -634,6 +944,62 @@ class Node:
         for session in self.sessions.values(): session['conn'].close()
         self.log("Node stopped.")
 
+    def _perform_security_calibration(self, conn, peer_username, is_initiator):
+        session = self.sessions[peer_username]
+        calibration_packets_to_send = []
+        received_calibration_packets = []
+        
+        for i in range(30):
+            packet = {'type': 'calibration', 'seq': i, 'data': os.urandom(random.randint(16, 128)).hex()}
+            calibration_packets_to_send.append(packet)
+
+        conn.settimeout(5.0)
+        try:
+            for packet in calibration_packets_to_send:
+                self.send_payload(conn, packet)
+                if not is_initiator:
+                    received = self.recv_payload(conn)
+                    if received and received.get('type') == 'calibration':
+                        received_calibration_packets.append(received)
+                time.sleep(random.uniform(0.01, 0.05))
+            
+            if is_initiator:
+                 for _ in range(30):
+                    received = self.recv_payload(conn)
+                    if received and received.get('type') == 'calibration':
+                        received_calibration_packets.append(received)
+
+        except socket.timeout:
+            self.log("Calibration failed: Peer communication timed out.")
+            return False
+        finally:
+            conn.settimeout(None)
+
+        if len(received_calibration_packets) < 30:
+             self.log("Calibration failed: Did not receive all packets from peer.")
+             return False
+
+        session['security_monitor'].calibrate(received_calibration_packets)
+        return True
+
+    def _generate_dip_challenge(self):
+        nonce = os.urandom(16).hex()
+        start = random.randint(0, len(SOURCE_CODE_BYTES) - 1024)
+        end = start + 1024
+        return {'nonce': nonce, 'start': start, 'end': end}
+
+    def _solve_dip_challenge(self, challenge, peer_public_id):
+        nonce = challenge['nonce']
+        start = challenge['start']
+        end = challenge['end']
+        code_slice = SOURCE_CODE_BYTES[start:end]
+        
+        hasher = hashlib.sha256()
+        hasher.update(nonce.encode())
+        hasher.update(peer_public_id.encode())
+        hasher.update(code_slice)
+        return hasher.hexdigest()
+
     def initiate_direct_session(self, peer_ip, peer_port, peer_public_id, peer_public_key_pem):
         peer_username = self.identity.generate_username_from_id(peer_public_id)
         self.log(f"Attempting direct connection to {peer_username} at {peer_ip}:{peer_port}...")
@@ -642,41 +1008,58 @@ class Node:
             self.log(msg)
             conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             conn.connect((peer_ip, peer_port))
+            
             self.send_payload(conn, {'type': 'hello'})
             challenge_response = self.recv_payload(conn)
             if not challenge_response or 'challenge' not in challenge_response:
                 raise Exception("Did not receive a valid challenge from the host.")
-            challenge = challenge_response['challenge']
+            
             dh_private_key = Config.DH_PARAMETERS.generate_private_key()
             dh_public_key_bytes = dh_private_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
+            
             response_payload = {
                 'public_id': self.identity.public_id, 
                 'machine_fingerprint': self.machine_fingerprint_manager.fingerprint,
+                'is_vm': self.machine_fingerprint_manager.is_vm,
                 'dh_public_key': dh_public_key_bytes.decode('utf-8'),
                 'timestamp': time.time(),
                 'nonce': os.urandom(16).hex(),
-                'challenge': challenge,
+                'challenge_solution': self._solve_dip_challenge(challenge_response['challenge'], peer_public_id),
                 'public_key': self.get_my_public_key_pem()
             }
             response_payload_json = json.dumps(response_payload, sort_keys=True)
             signature = self.digital_signature_manager.sign(response_payload_json)
             self.send_payload(conn, {'type': 'challenge_response', 'payload': response_payload, 'signature': signature})
             self.log(f"Sent challenge response to {peer_username}.")
+
             peer_final_response = self.recv_payload(conn)
             if not peer_final_response: raise Exception("No final response from peer.")
             peer_payload = peer_final_response.get('payload')
             peer_signature = peer_final_response.get('signature')
             if not DigitalSignatureManager.verify(peer_public_key_pem, json.dumps(peer_payload, sort_keys=True), peer_signature):
                 raise Exception("Peer's final response signature is invalid! Possible MitM attack.")
+            
             if peer_payload.get('status') == 'accepted':
+                final_ack_payload = {'dip_solution': self._solve_dip_challenge(peer_payload['dip_challenge'], peer_public_id)}
+                self.send_payload(conn, final_ack_payload)
+
                 peer_dh_public_key_pem = peer_payload.get('dh_public_key')
                 peer_dh_public_key = serialization.load_pem_public_key(peer_dh_public_key_pem.encode('utf-8'), backend=default_backend())
                 shared_key = dh_private_key.exchange(peer_dh_public_key)
-                self.log(f"✅ Session established with '{peer_username}'!")
+                self.log(f"Handshake complete. Establishing secure session with '{peer_username}'...")
+                
                 self.sessions[peer_username] = {
-                    'conn': conn, 'crypto': QuantumSentryCryptography(), 'key_stream': KeyStreamGenerator(shared_key),
-                    'anomaly_detector': AnomalyDetector(self.log), 'public_id': peer_public_id, 'public_key': peer_public_key_pem
+                    'conn': conn, 'crypto': QuantumSentryCryptography(), 
+                    'key_stream': KeyStreamGenerator(shared_key, self.machine_fingerprint_manager.fingerprint),
+                    'security_monitor': SecurityMonitor(self.log), 
+                    'public_id': peer_public_id, 'public_key': peer_public_key_pem,
+                    'is_vm': peer_payload.get('is_peer_on_vm')
                 }
+                
+                if not self._perform_security_calibration(conn, peer_username, is_initiator=True):
+                    raise Exception("Security calibration failed. Aborting connection.")
+
+                self.log(f"✅ Secure session established with '{peer_username}'!")
                 self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'success'})
                 threading.Thread(target=self._listen_for_messages, args=(conn, peer_username), daemon=True).start()
             else:
@@ -710,56 +1093,75 @@ class Node:
         initial_request = self.recv_payload(conn)
         if not initial_request or initial_request.get('type') != 'hello':
             self.log(f"Invalid initial request from {addr}. Closing."); conn.close(); return
-        challenge = os.urandom(32).hex()
-        self.send_payload(conn, {'challenge': challenge})
+        
+        dip_challenge = self._generate_dip_challenge()
+        self.send_payload(conn, {'challenge': dip_challenge})
+        
         response_wrapper = self.recv_payload(conn)
         if not response_wrapper or response_wrapper.get('type') != 'challenge_response':
             self.log(f"Invalid challenge response from {addr}. Closing."); conn.close(); return
+        
         req_payload = response_wrapper.get('payload')
         req_signature = response_wrapper.get('signature')
-        if not req_payload or not req_signature:
-            self.log(f"Malformed challenge response from {addr}. Closing."); conn.close(); return
-        if req_payload.get('challenge') != challenge:
-            self._send_rejection(conn, "Challenge mismatch (replay attack?)."); return
-        peer_public_key_pem = req_payload.get('public_key')
-        if not peer_public_key_pem:
-            self._send_rejection(conn, "Public key was not provided in handshake."); return
-        self._handle_session_responder(conn, req_payload, req_signature, peer_public_key_pem)
+        peer_public_id = req_payload.get('public_id')
+        
+        expected_solution = self._solve_dip_challenge(dip_challenge, peer_public_id)
+        if req_payload.get('challenge_solution') != expected_solution:
+            self._send_rejection(conn, "Integrity proof failed. Client may be modified."); return
+
+        self.log("Peer has passed Dynamic Integrity Proof.")
+        self._handle_session_responder(conn, req_payload, req_signature)
     
-    def _handle_session_responder(self, conn, request, signature, peer_public_key_pem):
-        req_time = request.get('timestamp', 0)
-        if time.time() - req_time > 10:
-            self._send_rejection(conn, "Request is too old (replay attack?)."); return
-        req_nonce = request.get('nonce')
-        with self.nonce_lock:
-            if not req_nonce or req_nonce in self.recent_nonces:
-                self._send_rejection(conn, "Invalid or re-used nonce (replay attack?)."); return
-            self.recent_nonces[req_nonce] = time.time()
+    def _handle_session_responder(self, conn, request, signature):
+        peer_public_key_pem = request.get('public_key')
+        if not DigitalSignatureManager.verify(peer_public_key_pem, json.dumps(request, sort_keys=True), signature):
+            self._send_rejection(conn, "Invalid digital signature."); return
+        
         peer_public_id = request.get('public_id')
         peer_machine_fingerprint = request.get('machine_fingerprint')
         if self.block_manager.is_blocked(peer_machine_fingerprint):
             self._send_rejection(conn, "User is blocked."); return
-        if not DigitalSignatureManager.verify(peer_public_key_pem, json.dumps(request, sort_keys=True), signature):
-            self.log(f"SIGNATURE ALERT: Invalid signature from incoming peer. Rejecting.");
-            self._send_rejection(conn, "Invalid digital signature."); return
+        
         msg, success = self.contacts.add_contact(peer_public_id, peer_public_key_pem)
         self.log(msg)
         known_username = self.contacts.get_username_by_id(peer_public_id)
+        
         try:
             dh_private_key = Config.DH_PARAMETERS.generate_private_key()
             dh_public_key_bytes = dh_private_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-            peer_dh_public_key_pem = request.get('dh_public_key')
-            peer_dh_public_key = serialization.load_pem_public_key(peer_dh_public_key_pem.encode('utf-8'), backend=default_backend())
-            shared_key = dh_private_key.exchange(peer_dh_public_key)
-            response_payload = {'status': 'accepted', 'dh_public_key': dh_public_key_bytes.decode('utf-8')}
+            
+            response_payload = {
+                'status': 'accepted', 
+                'dh_public_key': dh_public_key_bytes.decode('utf-8'),
+                'is_peer_on_vm': request.get('is_vm'),
+                'dip_challenge': self._generate_dip_challenge()
+            }
             response_json = json.dumps(response_payload, sort_keys=True)
             response_signature = self.digital_signature_manager.sign(response_json)
             self.send_payload(conn, {'payload': response_payload, 'signature': response_signature})
-            self.log(f"Accepted P2P session with '{known_username}'.")
+
+            final_ack = self.recv_payload(conn)
+            expected_solution = self._solve_dip_challenge(response_payload['dip_challenge'], self.identity.public_id)
+            if not final_ack or final_ack.get('dip_solution') != expected_solution:
+                 raise Exception("Peer failed final integrity proof.")
+
+            self.log("Mutual integrity proof successful.")
+            peer_dh_public_key_pem = request.get('dh_public_key')
+            peer_dh_public_key = serialization.load_pem_public_key(peer_dh_public_key_pem.encode('utf-8'), backend=default_backend())
+            shared_key = dh_private_key.exchange(peer_dh_public_key)
+
             self.sessions[known_username] = {
-                'conn': conn, 'crypto': QuantumSentryCryptography(), 'key_stream': KeyStreamGenerator(shared_key),
-                'anomaly_detector': AnomalyDetector(self.log), 'public_id': peer_public_id, 'public_key': peer_public_key_pem
+                'conn': conn, 'crypto': QuantumSentryCryptography(), 
+                'key_stream': KeyStreamGenerator(shared_key, self.machine_fingerprint_manager.fingerprint),
+                'security_monitor': SecurityMonitor(self.log), 
+                'public_id': peer_public_id, 'public_key': peer_public_key_pem,
+                'is_vm': request.get('is_vm')
             }
+            
+            if not self._perform_security_calibration(conn, known_username, is_initiator=False):
+                raise Exception("Security calibration failed.")
+
+            self.log(f"✅ Secure session established with '{known_username}'.")
             self.event_queue.put({'type': 'p2p_status', 'peer_username': known_username, 'status': 'success'})
             threading.Thread(target=self._listen_for_messages, args=(conn, known_username), daemon=True).start()
         except Exception as e:
@@ -783,7 +1185,17 @@ class Node:
                 self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'disconnected'})
                 if peer_username in self.sessions: del self.sessions[peer_username]
                 break
-            if session['anomaly_detector'].check_anomaly(): pass
+            
+            if message.get('type') == 'calibration': continue
+
+            monitor = session['security_monitor']
+            monitor.analyze_packet(message, session['is_vm'])
+            
+            if monitor.trust_score < 50:
+                self.log(f"CRITICAL: Trust score for {peer_username} fell to {monitor.trust_score}. Terminating connection.")
+                conn.close()
+                break
+
             payload_data = message.get('data', '')
             signature_b64 = message.get('signature', '')
             peer_public_key = session.get('public_key')
@@ -793,48 +1205,6 @@ class Node:
             event['from'] = peer_username
             self.event_queue.put(event)
     
-    def connect_serverless(self, passphrase):
-        self.log("Starting serverless connection process...")
-        threading.Thread(target=self._run_dht_logic, args=(passphrase,), daemon=True).start()
-
-    def _run_dht_logic(self, passphrase):
-        asyncio.run(self._async_dht_worker(passphrase))
-
-    async def _async_dht_worker(self, passphrase):
-        bootstrap_nodes = [("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881), ("router.utorrent.com", 6881)]
-        dht_node = MiniDHT(udp_port=self.listening_port)
-        await dht_node.listen()
-        await dht_node.bootstrap(bootstrap_nodes)
-        self.log("Connected to the DHT network.")
-        rendezvous_key = hashlib.pbkdf2_hmac('sha256', passphrase.encode(), b'aetherium_rendezvous_salt', 100_000, dklen=20)
-        self.log("Searching for peer on the DHT...")
-        self.event_queue.put({'type': 'update_status', 'data': 'Searching for peer... (this can take up to 60 seconds)'})
-        found_value = await dht_node.get(rendezvous_key)
-        if found_value:
-            self.log("Peer found! Decoding their info...")
-            self.event_queue.put({'type': 'update_status', 'data': 'Peer found! Attempting to connect...'})
-            try:
-                peer_info = json.loads(found_value)
-                peer_ip, peer_port = peer_info['public_ip'], peer_info['port']
-                peer_public_id, peer_public_key = peer_info['public_id'], peer_info['public_key']
-                threading.Thread(target=self.initiate_direct_session, args=(peer_ip, peer_port, peer_public_id, peer_public_key), daemon=True).start()
-            except (json.JSONDecodeError, KeyError) as e:
-                self.log(f"Error decoding peer info from DHT: {e}")
-                self.event_queue.put({'type': 'update_status', 'data': 'Error: Peer data was corrupted.'})
-        else:
-            self.log("Peer not found. Announcing our presence on the DHT.")
-            self.event_queue.put({'type': 'update_status', 'data': 'Peer not found. Announcing and waiting...'})
-            my_public_ip = "127.0.0.1"
-            try:
-                with urllib.request.urlopen("https://api.ipify.org") as response:
-                    my_public_ip = response.read().decode('utf-8')
-            except Exception as e:
-                self.log(f"Could not determine public IP via api.ipify.org: {e}. Connection may fail if not on LAN.")
-            my_info = {"public_ip": my_public_ip, "port": self.listening_port, "public_id": self.identity.public_id, "public_key": self.get_my_public_key_pem()}
-            await dht_node.set(rendezvous_key, json.dumps(my_info))
-            self.log("Our info is now stored in the DHT. Waiting for peer to connect to us.")
-            self.event_queue.put({'type': 'update_status', 'data': 'Waiting for peer to connect...'})
-
     def send_p2p_message(self, peer_username, text_message):
         if peer_username in self.sessions:
             session = self.sessions[peer_username]
@@ -965,10 +1335,47 @@ def get_local_ip():
     finally: s.close()
     return IP
 
-def start_serverless_connection(passphrase):
-    if not passphrase: return "A passphrase is required."
-    app_state.node.connect_serverless(passphrase)
-    return "Starting serverless connection... Check System Log for progress."
+def create_invitation_ui(carrier_file, secret_phrase):
+    if carrier_file is None or not secret_phrase:
+        return None, "Please upload a carrier file and provide a secret phrase."
+    
+    try:
+        steg_manager = MediaSteganographyManager(secret_phrase)
+        data_to_hide = {
+            "ip": get_local_ip(),
+            "port": app_state.node.listening_port,
+            "public_id": app_state.identity_manager.public_id,
+            "public_key": app_state.node.get_my_public_key_pem()
+        }
+        output_path = steg_manager.embed(carrier_file.name, data_to_hide)
+        app_state.log(f"Invitation created: {output_path}. Send this file to your contact.")
+        return output_path, f"Invitation file created: {os.path.basename(output_path)}. Send this to your contact and tell them to use the same secret phrase."
+    except Exception as e:
+        app_state.log(f"ERROR creating invitation: {e}")
+        return None, f"Error: {e}"
+
+def use_invitation_ui(invitation_file, secret_phrase):
+    if invitation_file is None or not secret_phrase:
+        return "Please upload the invitation file and provide the secret phrase."
+    
+    try:
+        steg_manager = MediaSteganographyManager(secret_phrase)
+        extracted_data = steg_manager.extract(invitation_file.name)
+        
+        peer_ip = extracted_data.get("ip")
+        peer_port = extracted_data.get("port")
+        peer_public_id = extracted_data.get("public_id")
+        peer_public_key = extracted_data.get("public_key")
+
+        if not all([peer_ip, peer_port, peer_public_id, peer_public_key]):
+            return "Invitation file is invalid or corrupted."
+
+        threading.Thread(target=app_state.node.initiate_direct_session, args=(peer_ip, peer_port, peer_public_id, peer_public_key)).start()
+        return f"Invitation decoded. Attempting to connect to {peer_ip}:{peer_port}..."
+
+    except Exception as e:
+        app_state.log(f"ERROR using invitation: {e}")
+        return f"Error: {e}"
 
 def send_message_ui(message, current_chat_id):
     if not message or not current_chat_id: return ""
@@ -1018,10 +1425,18 @@ def main():
             with gr.TabItem("Chat & Network"):
                 with gr.Row():
                     with gr.Column(scale=1):
-                        gr.Markdown("### 1. Connect to a Peer (Serverless)")
-                        passphrase_input = gr.Textbox(label="Shared Secret Passphrase", type="password")
-                        connect_btn = gr.Button("Connect / Wait for Peer")
+                        gr.Markdown("### 1. Create or Use an Invitation")
                         connection_status_output = gr.Textbox(label="Connection Status", interactive=False, lines=3)
+                        with gr.Tabs():
+                            with gr.TabItem("Create Invitation (Host)"):
+                                host_file_input = gr.File(label="Upload any Carrier File (Image or Video)")
+                                host_secret_input = gr.Textbox(label="Enter a Shared Secret Passphrase", type="password")
+                                create_invitation_btn = gr.Button("Create Invitation File")
+                                invitation_file_output = gr.File(label="Download Your Invitation File")
+                            with gr.TabItem("Use Invitation (Connect)"):
+                                connect_file_input = gr.File(label="Upload Invitation File")
+                                connect_secret_input = gr.Textbox(label="Enter the Shared Secret Passphrase", type="password")
+                                connect_btn = gr.Button("Connect using Invitation")
                     with gr.Column(scale=2):
                         gr.Markdown("### 2. Secure Chat")
                         all_chat_choices = [f"p2p:{c}" for c in app_state.contact_manager.contacts.keys()] + [f"group:{g}" for g in app_state.group_manager.groups.keys()]
@@ -1052,11 +1467,15 @@ def main():
                         group_status_box = gr.Textbox(label="Group Status", interactive=False)
             with gr.TabItem("System Log"):
                 log_output = gr.Textbox(label="Log", lines=20, interactive=False, autoscroll=True)
-        connect_btn.click(start_serverless_connection, [passphrase_input], [connection_status_output])
+        
+        create_invitation_btn.click(create_invitation_ui, [host_file_input, host_secret_input], [invitation_file_output, connection_status_output])
+        connect_btn.click(use_invitation_ui, [connect_file_input, connect_secret_input], [connection_status_output])
+        
         chat_input.submit(send_message_ui, [chat_input, chat_selector], [chat_input])
         send_file_btn.click(send_file_ui, [file_to_send, chat_selector], None)
         chat_selector.change(change_active_chat, [chat_selector, p2p_chat_histories, group_chat_histories], [chat_output])
         create_group_btn.click(create_group_ui, [group_name_input, group_members_input], [group_status_box, chat_selector])
+        
         timer = gr.Timer(1, active=False)
         timer.tick(
             update_ui_loop,

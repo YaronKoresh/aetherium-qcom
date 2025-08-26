@@ -1,6 +1,8 @@
 @echo off
 REM Aetherium Q-Com Launcher for Windows - Fully automatic privilege handling
 
+cd /d %~dp0
+
 REM == Argument handler for elevated re-launch ==
 if "%1"=="install_python" goto install_python_logic
 if "%1"=="install_package_admin" goto install_package_as_admin
