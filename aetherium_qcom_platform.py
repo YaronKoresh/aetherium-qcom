@@ -1223,7 +1223,7 @@ def main():
         timer = gr.Timer(1, active=False)
         timer.tick(
             update_ui_loop,
-            inputs=[chat_selector, p2p_chat_histories, group_histories],
+            inputs=[chat_selector, p2p_chat_histories, group_chat_histories],
             outputs=[log_output, chat_selector, p2p_chat_histories, group_chat_histories, chat_selector, chat_update_trigger]
         )
         chat_update_trigger.change(
