@@ -28,32 +28,15 @@ def get_source_code_hash(full_code=False):
 SOURCE_CODE_BYTES = get_source_code_hash(full_code=True)
 SOURCE_HASH = hashlib.sha256(SOURCE_CODE_BYTES).hexdigest()
 
-class DependencyManager:
-    REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy==1.26.4', 'scikit-learn', 'pandas==2.2.1']
-    if platform.system() == "Windows":
-        REQUIRED_PACKAGES.append('wmi')
-    
-    @staticmethod
-    def ensure_dependencies():
-        missing_packages = []
-        for package in DependencyManager.REQUIRED_PACKAGES:
-            try:
-                if package == 'Pillow': __import__('PIL')
-                elif package == 'opencv-python': __import__('cv2')
-                elif package == 'scikit-learn': __import__('sklearn')
-                else: __import__(package.split('>')[0].split('=')[0])
-            except ImportError:
-                missing_packages.append(package)
-        if not missing_packages:
-            return
-        print(f"Installing missing packages: {', '.join(missing_packages)}")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", *missing_packages])
-        except subprocess.CalledProcessError:
-            print("ERROR: Could not install dependencies. Please install them manually and restart.")
-            sys.exit(1)
+REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy==1.26.4', 'scikit-learn', 'pandas==2.2.1']
+if platform.system() == "Windows":
+    REQUIRED_PACKAGES.append('wmi')
 
-DependencyManager.ensure_dependencies()
+try:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", *REQUIRED_PACKAGES])
+except subprocess.CalledProcessError:
+    print("ERROR: Could not install dependencies. Please install them manually and restart.")
+    sys.exit(1)
 
 if platform.system() == "Windows":
     import wmi
