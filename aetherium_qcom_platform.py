@@ -1228,7 +1228,7 @@ def main():
         )
         chat_update_trigger.change(
             change_active_chat,
-            inputs=[chat_selector, p2p_chat_histories, group_histories],
+            inputs=[chat_selector, p2p_chat_histories, group_chat_histories],
             outputs=[chat_output]
         )
         demo.load(lambda: gr.Timer(active=True), None, outputs=timer).then(
