@@ -14,9 +14,6 @@
     <a href="https://github.com/YaronKoresh/aetherium-qcom/">
         <img src="https://img.shields.io/badge/status-active-success.svg" alt="Status: Active">
     </a>
-    <a href="https://github.com/psf/black">
-        <img src="https://img.shields.io/badge/code%20style-black-000000.svg" alt="Code style: black">
-    </a>
     <a href="https://en.wikipedia.org/wiki/Zero_trust_architecture">
         <img src="https://img.shields.io/badge/security-zero--trust-critical" alt="Security: Zero-Trust">
     </a>
@@ -116,3 +113,4 @@ This project is licensed under the **MIT License**.
 ## 🧑‍💻 Contributing
 
 To report bugs or suggest enhancements, please search the open or closed issues before opening a new one.
+
