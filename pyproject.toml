@@ -10,7 +10,7 @@ authors = [
 ]
 description = "Aetherium Q-Com is a decentralized and secure communication platform engineered for end-to-end encrypted messaging."
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -19,9 +19,7 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Topic :: Security :: Cryptography",
 ]
-dependencies = [
-    "numpy",
-]
+dependencies = []
 
 [project.urls]
 "Homepage" = "https://github.com/YaronKoresh/aetherium-qcom"
