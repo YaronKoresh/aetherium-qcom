@@ -65,7 +65,7 @@ The core messaging system is based on the principles of the **One-Time Pad (OTP)
 
 Installation is handled by automated scripts for your operating system.
 
-### 🪟 Windows
+### 🖥️ Windows
 
 1.  **Install**: Download and run `install_aeterium.bat`. It will automatically request administrator privileges to install Python (if needed) and all required dependencies.
 2.  **Run**: After installation, simply run `run_aeterium.bat` to launch the application.
@@ -113,4 +113,3 @@ This project is licensed under the **MIT License**.
 ## 🧑‍💻 Contributing
 
 To report bugs or suggest enhancements, please search the open or closed issues before opening a new one.
-
