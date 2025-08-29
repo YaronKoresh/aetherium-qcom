@@ -7,7 +7,7 @@ info() {
 info "Launching Aetherium Q-Com..."
 printf '\n'
 
-python3 -m aetherium_qcom_platform
+python3 -m aetherium_qcom
 
 printf '\n'
 info "Aetherium Q-Com has been closed."

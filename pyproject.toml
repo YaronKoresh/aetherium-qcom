@@ -36,9 +36,3 @@ dependencies = [
 [project.urls]
 "Homepage" = "https://github.com/YaronKoresh/aetherium-qcom"
 "Bug Tracker" = "https://github.com/YaronKoresh/aetherium-qcom/issues"
-
-[project.scripts]
-aetherium-qcom = "aetherium_qcom_platform:main"
-
-[tool.setuptools]
-py-modules = ["aetherium_qcom_platform"]

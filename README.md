@@ -4,7 +4,7 @@
 
 ### _Decentralized, Untraceable, and Unblockable Communication_
 
-<img src="logo.png" width="200px" height="200px">
+<img src="assets/logo.png" width="200px" height="200px">
 
 ---
 
@@ -127,32 +127,32 @@ Aetherium Q-Com includes a powerful set of command-line tools for advanced users
 
 * **Launch the GUI (Default)**
     ```sh
-    aetherium-qcom gui
+    python -m aetherium_qcom gui
     ```
 * **Launch the Interactive Shell**
     ```sh
-    aetherium-qcom interactive
+    python -m aetherium_qcom interactive
     ```
 * **Developer Key Generation**
     ```sh
-    aetherium-qcom keygen
+    python -m aetherium_qcom keygen
     ```
 * **Sign the Source Code**
     ```sh
-    aetherium-qcom sign
+    python -m aetherium_qcom sign
     ```
 * **Create an Invitation**
     ```sh
-    aetherium-qcom invite create --media /path/to/your/video.mp4 --password "your-secret"
+    python -m aetherium_qcom invite create --media /path/to/your/video.mp4 --password "your-secret"
     ```
 * **Read an Invitation**
     ```sh
-    aetherium-qcom invite read --media /path/to/invitation.mp4 --password "your-secret"
+    python -m aetherium_qcom invite read --media /path/to/invitation.mp4 --password "your-secret"
     ```
 * **Get Help**
     ```sh
-    aetherium-qcom --help
-    aetherium-qcom invite --help
+    python -m aetherium_qcom --help
+    python -m aetherium_qcom invite --help
     ```
 
 ---

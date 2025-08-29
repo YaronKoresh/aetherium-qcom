@@ -101,7 +101,7 @@ goto end_success
 
 :install_package_standard
 echo Installing/Updating Aetherium Q-Com and all dependencies...
-py -m pip install -e .
+py -m pip install -e ..
 if %errorlevel% equ 0 (
     goto install_complete
 )
@@ -110,7 +110,7 @@ exit /b
 
 :install_package_as_admin
 echo Now running as Administrator. Retrying installation...
-py -m pip install -e .
+py -m pip install -e ..
 if %errorlevel% neq 0 (
     goto end_error
 )

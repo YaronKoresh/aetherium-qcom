@@ -124,7 +124,7 @@ if [ "$FFMPEG_COMPILE" = "1" ]; then
 fi
 
 info "Installing/Updating Aetherium Q-Com..."
-python3 -m pip install -e .
+python3 -m pip install -e ..
 if [ $? -ne 0 ]; then
     error "Installation of Aetherium Q-Com failed."
 fi

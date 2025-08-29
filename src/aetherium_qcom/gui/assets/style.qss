@@ -1,0 +1,17 @@
+/* aetherium_qcom/gui/assets/style.qss */
+QMainWindow, QWidget { background-color: #263238; }
+QLabel { color: #CFD8DC; font-size: 14px; }
+QLabel#TitleLabel { color: white; font-size: 20px; font-weight: bold; }
+QPushButton { background-color: #00796B; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-size: 14px; }
+QPushButton:hover { background-color: #00897B; }
+QPushButton:disabled { background-color: #455A64; }
+QPushButton#SendButton { background-color: #4CAF50; }
+QPushButton#SendButton:hover { background-color: #66BB6A; }
+QPushButton#SidebarButton { background-color: transparent; text-align: left; padding: 10px; font-size: 16px; border-radius: 0px; }
+QPushButton#SidebarButton:hover { background-color: #37474F; }
+QLineEdit, QTextEdit, QListWidget { background-color: #37474F; color: #CFD8DC; border: 1px solid #263238; border-radius: 4px; padding: 5px; font-size: 14px; }
+QStatusBar { color: #CFD8DC; }
+QScrollBar:vertical { border: none; background: #37474F; width: 10px; margin: 0px 0px 0px 0px; }
+QScrollBar::handle:vertical { background: #546E7A; min-height: 20px; border-radius: 5px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QWidget#Sidebar { background-color: #212121; }
