@@ -29,6 +29,9 @@ try:
     from kademlia.network import Server
     import numpy as np
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.backends import default_backend
     from pqcrypto.sign import ml_dsa_87
     from pqcrypto.kem import ml_kem_1024
     from pydub import AudioSegment
@@ -98,7 +101,15 @@ class SteganographyManager:
                 
                 if len(total_bits) > w * h * 3: return None, "Data too large for image."
                 
-                rng = np.random.default_rng(int.from_bytes(hashlib.sha256(password.encode()).digest(), 'big'))
+                kdf = PBKDF2HMAC(
+                    algorithm=hashes.SHA256(),
+                    length=32,
+                    salt=self._PBKDF2_SALT,
+                    iterations=100_000,
+                    backend=default_backend()
+                )
+                seed_bytes = kdf.derive(password.encode())
+                rng = np.random.default_rng(int.from_bytes(seed_bytes, 'big'))
                 indices = rng.choice(w * h * 3, len(total_bits), replace=False)
                 
                 flat_pixel_data = [chan for pix in img.getdata() for chan in pix]
