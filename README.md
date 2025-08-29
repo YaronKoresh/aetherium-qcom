@@ -62,7 +62,7 @@ All you have to do is **match the last few characters** of the public key in you
 
 Think of it like recognizing your favorite book by its cover, without needing to reread it. This method provides sufficient protection against forgeries while saving you time.
 
-**For quick verification, please check that the public key you downloaded **ends with:** `WW2SSgQC`
+For quick verification, please check that the public key you downloaded **ends with:** `WW2SSgQC`
 
 ---
 
