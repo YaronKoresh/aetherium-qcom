@@ -38,6 +38,8 @@ except ImportError as e:
     sys.exit(1)
 
 class SteganographyManager:
+    # Recommended constant salt (public, not secret):
+    _PBKDF2_SALT = b"StegSalt"
     def _get_magic_number(self, password):
         return hashlib.sha256(password.encode()).digest()[:5]
 
@@ -117,7 +119,14 @@ class SteganographyManager:
             with Image.open(image_path) as img:
                 img = img.convert("RGB")
                 w, h = img.size
-                rng = np.random.default_rng(int.from_bytes(hashlib.sha256(password.encode()).digest(), 'big'))
+                seed_bytes = hashlib.pbkdf2_hmac(
+                    "sha256",
+                    password.encode(),
+                    self._PBKDF2_SALT,
+                    100_000,
+                    dklen=32
+                )
+                rng = np.random.default_rng(int.from_bytes(seed_bytes, 'big'))
                 
                 flat_pixel_data = [chan for pix in img.getdata() for chan in pix]
 
