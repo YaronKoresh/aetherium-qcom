@@ -44,7 +44,15 @@ class SteganographyManager:
     # Recommended constant salt (public, not secret):
     _PBKDF2_SALT = b"StegSalt"
     def _get_magic_number(self, password):
-        return hashlib.sha256(password.encode()).digest()[:5]
+        # Use PBKDF2HMAC for password-derived magic number
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=5,
+            salt=self._PBKDF2_SALT,
+            iterations=100000,
+            backend=default_backend()
+        )
+        return kdf.generate(password.encode())
 
     def embed(self, input_path, data_bytes, password):
         _, ext = os.path.splitext(input_path.lower())
