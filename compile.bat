@@ -1,41 +1,67 @@
 @echo off
 cd /d %~dp0
 
+>nul 2>&1 "%SYSTEMROOT%\system32\cacls.exe" "%SYSTEMROOT%\system32\config\system"
+if '%errorlevel%' NEQ '0' (
+    powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+
 echo.
 echo # Aetherium Q-Com Nuitka Builder
 echo # =================================
 echo.
 
-echo [STEP 1/2] Installing Nuitka...
+echo [STEP 1/3] Installing Nuitka...
 py -m pip install --upgrade nuitka
-if %errorlevel% equ 0 (
-    echo  - Dependencies installed successfully.
-    goto compile_nuitka
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to install Nuitka.
+    goto end_error
 )
-powershell -Command "Start-Process '%~f0' -Verb RunAs -ArgumentList 'install_deps_admin'"
-echo [INFO] Now running as Administrator to install Nuitka...
-py -m pip install --upgrade nuitka
-if %errorlevel% equ 0 (
-    echo  - Dependencies installed successfully with admin rights.
-    goto compile_nuitka
+echo  - Nuitka is up to date.
+
+echo.
+echo [STEP 2/3] Checking for MSVC Build Tools...
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo  - MSVC Build Tools are already installed.
+        goto compile_nuitka
+    )
 )
-goto end_error
+
+echo  - MSVC Build Tools not found. Starting automatic installation...
+echo  - This process may take several minutes and requires an internet connection.
+powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://aka.ms/vs/17/release/vs_BuildTools.exe', '.\vs_BuildTools.exe')"
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] Failed to download Visual Studio Build Tools installer.
+    goto end_error
+)
+
+start /wait .\vs_BuildTools.exe --quiet --wait --norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] MSVC Build Tools installation failed.
+    del .\vs_BuildTools.exe
+    goto end_error
+)
+
+del .\vs_BuildTools.exe
+echo  - MSVC Build Tools installed successfully.
 
 :compile_nuitka
 echo.
-echo [STEP 2/2] Starting Nuitka compilation...
+echo [STEP 3/3] Starting Nuitka compilation...
 echo.
 py -m nuitka ^
     --onefile ^
     --standalone ^
     --windows-console-mode=disable ^
-    --clang ^
+    --msvc=latest ^
     -j %NUMBER_OF_PROCESSORS% ^
-    --plugin-enable=multiprocessing ^
-    --include-module=fcntl ^
-    --include-module=collections.abc ^
+    --enable-plugin=pyside6 ^
     --include-module=collections ^
-    --include-module=xml.dom.XML_NAMESPACE ^
     --include-module=xml ^
     --include-package=pydub ^
     --include-package=moviepy ^

@@ -70,11 +70,8 @@ python3 -m nuitka \
     --standalone \
     --clang \
     -j "$NUM_CORES" \
-    --plugin-enable=multiprocessing \
-    --include-module=fcntl \
-    --include-module=collections.abc \
+    --enable-plugin=pyside6 \
     --include-module=collections \
-    --include-module=xml.dom.XML_NAMESPACE \
     --include-module=xml \
     --include-package=pydub \
     --include-package=moviepy \
