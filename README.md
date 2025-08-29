@@ -174,10 +174,11 @@ The platform is designed to be completely silent. To connect with a contact, you
 
 ## 📜 License
 
-This project is licensed under the **MIT License**.
+This project is licensed under the **GNU General Public License (GPLv3)**.
 
 ---
 
 ## 🧑‍💻 Contributing
+
 
 To report bugs or suggest enhancements, please search the open or closed issues before opening a new one.
