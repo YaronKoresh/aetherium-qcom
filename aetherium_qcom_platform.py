@@ -1,1519 +1,1368 @@
 import sys
-import subprocess
-import random
-import hashlib
 import os
-import base64
+import hashlib
 import json
+import base64
 import time
-import queue
+import inspect
+import asyncio
 import threading
 import socket
-import platform
-import math
-from collections import deque, OrderedDict
-import asyncio
-import urllib.request
-import xml.etree.ElementTree as ET
-from enum import Enum
-
-def get_source_code_hash(full_code=False):
-    file_path = os.path.realpath(__file__)
-    with open(file_path, 'rb') as f:
-        code_bytes = f.read()
-    if full_code:
-        return code_bytes
-    return hashlib.sha256(code_bytes).hexdigest()
-
-SOURCE_CODE_BYTES = get_source_code_hash(full_code=True)
-SOURCE_HASH = hashlib.sha256(SOURCE_CODE_BYTES).hexdigest()
-
-REQUIRED_PACKAGES = ['gradio', 'cryptography', 'Pillow', 'opencv-python', 'numpy==1.26.4', 'scikit-learn', 'pandas==2.2.1']
-if platform.system() == "Windows":
-    REQUIRED_PACKAGES.append('wmi')
+import argparse
+import cmd
+import shlex
+import wave
+import tempfile
+import shutil
+from datetime import datetime
+from contextlib import contextmanager
+from collections import deque
 
 try:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "--force-reinstall", *REQUIRED_PACKAGES])
-except subprocess.CalledProcessError:
-    print("ERROR: Could not install dependencies. Please install them manually and restart.")
+    from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                                 QTextEdit, QLineEdit, QPushButton, QListWidget, QInputDialog,
+                                 QMessageBox, QFileDialog, QLabel, QListWidgetItem, QFrame,
+                                 QStackedWidget)
+    from PySide6.QtCore import Signal, QObject, QThread, Qt, QSettings, QSize
+    from PySide6.QtGui import QColor, QBrush, QIcon, QPixmap
+    from PIL import Image
+    from kademlia.network import Server
+    import numpy as np
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from pqcrypto.sign import ml_dsa_87
+    from pqcrypto.kem import ml_kem_1024
+    from pydub import AudioSegment
+    from moviepy import VideoFileClip, AudioFileClip
+except ImportError as e:
+    print(f"Fatal Error: A required library is missing: {e.name}. Please run 'pip install {e.name}'")
     sys.exit(1)
 
-if platform.system() == "Windows":
-    import wmi
-import gradio as gr
-import numpy as np
-import cv2
-from PIL import Image
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import rsa, padding, dh
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sklearn.ensemble import IsolationForest
-from sklearn.mixture import GaussianMixture
+class SteganographyManager:
+    def _get_magic_number(self, password):
+        return hashlib.sha256(password.encode()).digest()[:5]
 
-class NativeUPnP:
-    def __init__(self, log_callback=print):
-        self.log = log_callback
-        self.control_url = None
-        self.service_type = None
-        self.base_url = None
-        self.lan_addr = get_local_ip()
+    def embed(self, input_path, data_bytes, password):
+        _, ext = os.path.splitext(input_path.lower())
+        img_ext = ['.png', '.jpg', '.jpeg', '.bmp', '.webp']
+        aud_ext = ['.wav', '.mp3', '.m4a', '.flac', '.ogg']
+        vid_ext = ['.mp4', '.mov', '.avi', '.mkv']
 
-    def discover(self):
-        ssdp_request = (
-            'M-SEARCH * HTTP/1.1\r\n'
-            'HOST: 239.255.255.250:1900\r\n'
-            'MAN: "ssdp:discover"\r\n'
-            'MX: 2\r\n'
-            'ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n'
-            '\r\n'
-        ).encode('utf-8')
-        
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-        sock.settimeout(3)
-        sock.sendto(ssdp_request, ('239.255.255.250', 1900))
-        
-        try:
-            while True:
-                resp, addr = sock.recvfrom(1024)
-                resp_text = resp.decode('utf-8', errors='ignore').lower()
-                if 'location:' in resp_text:
-                    for line in resp_text.split('\r\n'):
-                        if line.startswith('location:'):
-                            location_url = line.split(':', 1)[1].strip()
-                            self.base_url = location_url.split('/rootDesc.xml')[0]
-                            return self._fetch_and_parse_description(location_url)
-        except socket.timeout:
-            self.log("UPnP discovery timed out. No gateway found.")
-            return False
-        finally:
-            sock.close()
-        return False
+        magic_number = self._get_magic_number(password)
+        data_with_header = magic_number + data_bytes
 
-    def _fetch_and_parse_description(self, url):
-        try:
-            with urllib.request.urlopen(url, timeout=3) as response:
-                xml_content = response.read()
-            
-            root = ET.fromstring(xml_content)
-            namespaces = {'ns': 'urn:schemas-upnp-org:device-1-0'}
-            
-            for service in root.findall('.//ns:service', namespaces):
-                service_type_elem = service.find('ns:serviceType', namespaces)
-                if service_type_elem is not None and ('WANIPConnection' in service_type_elem.text or 'WANPPPConnection' in service_type_elem.text):
-                    self.service_type = service_type_elem.text
-                    control_url_elem = service.find('ns:controlURL', namespaces)
-                    if control_url_elem is not None:
-                        self.control_url = self.base_url + control_url_elem.text
-                        return True
-        except Exception as e:
-            self.log(f"Failed to parse UPnP description: {e}")
-            return False
-        return False
-
-    def _send_soap_request(self, action, args):
-        if not self.control_url:
-            if not self.discover():
-                return False
-        
-        soap_body = f"""<?xml version="1.0"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-        <s:Body>
-        <u:{action} xmlns:u="{self.service_type}">
-        """
-        for k, v in args.items():
-            soap_body += f"<{k}>{v}</{k}>"
-        soap_body += f"</u:{action}></s:Body></s:Envelope>"
-
-        headers = {
-            'SOAPAction': f'"{self.service_type}#{action}"',
-            'Content-Type': 'text/xml',
-            'Host': self.base_url.split('//')[1].split('/')[0]
-        }
-
-        try:
-            req = urllib.request.Request(self.control_url, soap_body.encode('utf-8'), headers)
-            with urllib.request.urlopen(req, timeout=3) as response:
-                return response.status == 200
-        except Exception as e:
-            self.log(f"SOAP request failed for action {action}: {e}")
-            return False
-
-    def add_port_mapping(self, port, protocol, description):
-        args = {
-            'NewRemoteHost': '',
-            'NewExternalPort': port,
-            'NewProtocol': protocol,
-            'NewInternalPort': port,
-            'NewInternalClient': self.lan_addr,
-            'NewEnabled': 1,
-            'NewPortMappingDescription': description,
-            'NewLeaseDuration': 0
-        }
-        return self._send_soap_request('AddPortMapping', args)
-
-    def delete_port_mapping(self, port, protocol):
-        args = {'NewRemoteHost': '', 'NewExternalPort': port, 'NewProtocol': protocol}
-        return self._send_soap_request('DeletePortMapping', args)
-
-class KBucket(OrderedDict):
-    def __init__(self, k_size):
-        super().__init__()
-        self.k_size = k_size
-    def add_node(self, node):
-        if node['id'] in self:
-            self.move_to_end(node['id'])
-        elif len(self) < self.k_size:
-            self[node['id']] = node
+        if ext in img_ext:
+            return self._embed_in_image(input_path, data_with_header, password)
+        elif ext in aud_ext:
+            return self._embed_in_audio(input_path, data_with_header, password)
+        elif ext in vid_ext:
+            return self._embed_in_video(input_path, data_with_header, password)
         else:
-            return False
-        return True
+            return None, f"Unsupported file type: {ext}"
 
-class MiniDHT(asyncio.Protocol):
-    def __init__(self, udp_port=8468, k_size=8, alpha=3):
-        self.udp_port = udp_port
-        self.k_size = k_size
-        self.alpha = alpha
-        self.node_id = os.urandom(20)
-        self.storage = {}
-        self.buckets = [KBucket(self.k_size) for _ in range(160)]
-        self.transport = None
-        self.rpc_callbacks = {}
-    def connection_made(self, transport):
-        self.transport = transport
-    def datagram_received(self, data, addr):
-        try:
-            message = json.loads(data.decode())
-            rpc_id = message.get('rpc_id')
-            if rpc_id and rpc_id in self.rpc_callbacks:
-                future, timeout_handle = self.rpc_callbacks.pop(rpc_id)
-                timeout_handle.cancel()
-                if not future.done():
-                    future.set_result((message, addr))
-                return
-            if 'method' in message:
-                self._handle_request(message, addr)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
-    def error_received(self, exc):
-        pass
-    async def _send_rpc(self, address, message):
-        loop = asyncio.get_running_loop()
-        rpc_id = os.urandom(8).hex()
-        message['rpc_id'] = rpc_id
-        future = loop.create_future()
-        timeout_handle = loop.call_later(2.0, self._rpc_timeout, rpc_id, future)
-        self.rpc_callbacks[rpc_id] = (future, timeout_handle)
-        self.transport.sendto(json.dumps(message).encode(), address)
-        try:
-            return await future
-        except asyncio.CancelledError:
-            return None, None
-    def _rpc_timeout(self, rpc_id, future):
-        if rpc_id in self.rpc_callbacks:
-            self.rpc_callbacks.pop(rpc_id)
-            if not future.done():
-                future.cancel()
-    def _get_bucket_index(self, other_id):
-        distance = int.from_bytes(self.node_id, 'big') ^ int.from_bytes(other_id, 'big')
-        return (distance.bit_length() - 1) if distance != 0 else 0
-    def _add_node(self, node):
-        index = self._get_bucket_index(node['id'])
-        self.buckets[index].add_node(node)
-    def _handle_request(self, message, addr):
-        method = message['method']
-        sender_id = bytes.fromhex(message['sender']['id'])
-        sender_node = {'id': sender_id, 'ip': addr[0], 'port': addr[1]}
-        self._add_node(sender_node)
-        response = {'rpc_id': message['rpc_id'], 'sender': {'id': self.node_id.hex()}}
-        if method == 'ping':
-            response['result'] = 'pong'
-        elif method == 'find_node':
-            target_id = bytes.fromhex(message['params']['target_id'])
-            response['result'] = self._find_closest_nodes(target_id)
-        elif method == 'store':
-            key = bytes.fromhex(message['params']['key'])
-            self.storage[key] = message['params']['value']
-            response['result'] = True
-        elif method == 'find_value':
-            key = bytes.fromhex(message['params']['key'])
-            if key in self.storage:
-                response['result'] = {'value': self.storage[key]}
-            else:
-                response['result'] = {'nodes': self._find_closest_nodes(key)}
-        self.transport.sendto(json.dumps(response).encode(), addr)
-    def _find_closest_nodes(self, target_id, count=None):
-        if count is None:
-            count = self.k_size
-        nodes = []
-        for bucket in self.buckets:
-            nodes.extend(bucket.values())
-        nodes.sort(key=lambda n: int.from_bytes(target_id, 'big') ^ int.from_bytes(n['id'], 'big'))
-        return [{'id': n['id'].hex(), 'ip': n['ip'], 'port': n['port']} for n in nodes[:count]]
-    async def _iterative_find(self, key, find_value=False):
-        shortlist = self._find_closest_nodes(key, self.alpha)
-        queried = set()
-        while True:
-            nodes_to_query = []
-            for node_info in shortlist:
-                if node_info['id'] not in queried and len(nodes_to_query) < self.alpha:
-                    nodes_to_query.append(node_info)
-            if not nodes_to_query:
-                break
-            tasks = []
-            for node_info in nodes_to_query:
-                queried.add(node_info['id'])
-                address = (node_info['ip'], node_info['port'])
-                method = 'find_value' if find_value else 'find_node'
-                params = {'key': key.hex()} if find_value else {'target_id': key.hex()}
-                message = {'method': method, 'sender': {'id': self.node_id.hex()}, 'params': params}
-                tasks.append(self._send_rpc(address, message))
-            responses = await asyncio.gather(*tasks)
-            new_nodes_found = False
-            for resp, addr in responses:
-                if resp and resp.get('result'):
-                    self._add_node({'id': bytes.fromhex(resp['sender']['id']), 'ip': addr[0], 'port': addr[1]})
-                    if find_value and 'value' in resp['result']:
-                        return resp['result']['value']
-                    nodes = resp['result'].get('nodes', [])
-                    for node in nodes:
-                        node['id'] = bytes.fromhex(node['id'])
-                        if node['id'] not in [n['id'] for n in shortlist]:
-                            shortlist.append(node)
-                            new_nodes_found = True
-            if not new_nodes_found:
-                break
-            shortlist.sort(key=lambda n: int.from_bytes(key, 'big') ^ int.from_bytes(n['id'], 'big'))
-        return None if find_value else shortlist[:self.k_size]
-    async def listen(self):
-        loop = asyncio.get_running_loop()
-        await loop.create_datagram_endpoint(lambda: self, local_addr=('0.0.0.0', self.udp_port))
-    async def bootstrap(self, nodes):
-        for ip, port in nodes:
-            try:
-                message = {'method': 'ping', 'sender': {'id': self.node_id.hex()}}
-                resp, addr = await self._send_rpc((ip, port), message)
-                if resp and resp.get('result') == 'pong':
-                    self._add_node({'id': bytes.fromhex(resp['sender']['id']), 'ip': addr[0], 'port': addr[1]})
-            except Exception:
-                pass
-        await self._iterative_find(self.node_id)
-    async def get(self, key):
-        return await self._iterative_find(key, find_value=True)
-    async def set(self, key, value):
-        closest_nodes_info = await self._iterative_find(key)
-        if not closest_nodes_info:
-            return
-        message = {
-            'method': 'store',
-            'sender': {'id': self.node_id.hex()},
-            'params': {'key': key.hex(), 'value': value}
-        }
-        tasks = [self._send_rpc((n['ip'], n['port']), message) for n in closest_nodes_info]
-        await asyncio.gather(*tasks)
+    def extract(self, input_path, password):
+        _, ext = os.path.splitext(input_path.lower())
+        img_ext = ['.png', '.jpg', '.jpeg', '.bmp', '.webp']
+        aud_ext = ['.wav', '.mp3', '.m4a', '.flac', '.ogg']
+        vid_ext = ['.mp4', '.mov', '.avi', '.mkv']
 
-class Config:
-    UNSUSPICIOUS_PORTS = list(range(49152, 65536))
-    BLOCKED_MACHINES_FILE = "blocked_machines.json"
-    GROUP_SETTINGS_FILE = "group_settings.json"
-    DH_PARAMETERS = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
+        data_with_header, error = None, None
+        magic_number = self._get_magic_number(password)
 
-class PacketObfuscator:
-    TLS_HEADER = b'\x17\x03\x03'
-    def wrap(self, data: bytes) -> bytes:
-        length = len(data).to_bytes(2, 'big')
-        return self.TLS_HEADER + length + data
-    def unwrap(self, sock: socket.socket) -> bytes | None:
+        if ext in img_ext:
+            data_with_header, error = self._extract_from_image(input_path, password)
+        elif ext in aud_ext:
+            data_with_header, error = self._extract_from_audio(input_path, password)
+        elif ext in vid_ext:
+            data_with_header, error = self._extract_from_video(input_path, password)
+        else:
+            return None, f"Unsupported file type: {ext}"
+
+        if error:
+            return None, error
+        
+        if data_with_header and data_with_header.startswith(magic_number):
+            return data_with_header[len(magic_number):], None
+        else:
+            return None, "No invitation data found in media file or incorrect password."
+
+    def _embed_in_image(self, image_path, data, password):
         try:
-            header = sock.recv(5)
-            if not header or len(header) < 5: return None
-            content_type, version, length = header[0:1], header[1:3], header[3:5]
-            if content_type != b'\x17' or version != b'\x03\x03': return None
-            payload_len = int.from_bytes(length, 'big')
-            payload = b''
-            while len(payload) < payload_len:
-                packet = sock.recv(payload_len - len(payload))
-                if not packet: return None
-                payload += packet
-            return payload
-        except (socket.timeout, ConnectionResetError, OSError):
+            with Image.open(image_path) as img:
+                img = img.convert("RGB")
+                w, h = img.size
+                bits = ''.join(format(byte, '08b') for byte in data)
+                data_len_bits = format(len(bits), '032b')
+                total_bits = data_len_bits + bits
+                
+                if len(total_bits) > w * h * 3: return None, "Data too large for image."
+                
+                rng = np.random.default_rng(int.from_bytes(hashlib.sha256(password.encode()).digest(), 'big'))
+                indices = rng.choice(w * h * 3, len(total_bits), replace=False)
+                
+                flat_pixel_data = [chan for pix in img.getdata() for chan in pix]
+
+                for i, bit in enumerate(total_bits):
+                    idx = indices[i]
+                    flat_pixel_data[idx] = (flat_pixel_data[idx] & 0xFE) | int(bit)
+
+                img.putdata(list(zip(*[iter(flat_pixel_data)]*3)))
+                
+                output_path = f"invitation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+                img.save(output_path, 'PNG')
+                return output_path, None
+        except Exception as e: return None, f"Image embedding error: {e}"
+
+    def _extract_from_image(self, image_path, password):
+        try:
+            with Image.open(image_path) as img:
+                img = img.convert("RGB")
+                w, h = img.size
+                rng = np.random.default_rng(int.from_bytes(hashlib.sha256(password.encode()).digest(), 'big'))
+                
+                flat_pixel_data = [chan for pix in img.getdata() for chan in pix]
+
+                len_indices = rng.choice(w * h * 3, 32, replace=False)
+                len_bits = "".join(str(flat_pixel_data[i] & 1) for i in len_indices)
+                data_len = int(len_bits, 2)
+
+                if data_len > w * h * 3: return None, "Corrupt data length."
+                
+                all_indices = rng.choice(w * h * 3, 32 + data_len, replace=False)
+                data_indices = all_indices[32:]
+                
+                bits = "".join(str(flat_pixel_data[i] & 1) for i in data_indices)
+                return bytearray(int(bits[i:i+8], 2) for i in range(0, len(bits), 8)), None
+        except Exception as e: return None, f"Image extraction error: {e}"
+
+    def _lsb_embed_in_wav(self, wav_path, data_to_embed):
+        with wave.open(wav_path, 'rb') as wav_file:
+            frames = bytearray(wav_file.readframes(wav_file.getnframes()))
+        
+        bits_to_embed = ''.join(format(byte, '08b') for byte in data_to_embed)
+        data_len_bits = format(len(bits_to_embed), '032b')
+        total_bits = data_len_bits + bits_to_embed
+
+        if len(total_bits) > len(frames):
+            raise ValueError("Data is too large for the audio file.")
+
+        for i, bit in enumerate(total_bits):
+            frames[i] = (frames[i] & 0xFE) | int(bit)
+
+        return bytes(frames)
+
+    def _lsb_extract_from_wav(self, wav_path):
+        with wave.open(wav_path, 'rb') as wav_file:
+            frames = wav_file.readframes(wav_file.getnframes())
+
+        len_bits = "".join([str(frames[i] & 1) for i in range(32)])
+        data_len = int(len_bits, 2)
+        
+        if data_len > (len(frames) - 32):
+             raise ValueError("Corrupt data length found in audio.")
+
+        data_bits = "".join([str(frames[i] & 1) for i in range(32, 32 + data_len)])
+        return bytearray(int(data_bits[i:i+8], 2) for i in range(0, len(data_bits), 8))
+
+    def _embed_in_audio(self, audio_path, data, password):
+        try:
+            audio = AudioSegment.from_file(audio_path)
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+                audio.export(temp_wav.name, format="wav")
+            
+            modified_frames = self._lsb_embed_in_wav(temp_wav.name, data)
+
+            with wave.open(temp_wav.name, 'rb') as wav_file:
+                params = wav_file.getparams()
+
+            output_path = f"invitation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+            with wave.open(output_path, 'wb') as new_wav:
+                new_wav.setparams(params)
+                new_wav.writeframes(modified_frames)
+            
+            os.remove(temp_wav.name)
+            return output_path, None
+        except Exception as e:
+            if 'temp_wav' in locals() and os.path.exists(temp_wav.name): os.remove(temp_wav.name)
+            return None, f"Audio embedding error: {e}"
+
+    def _extract_from_audio(self, audio_path, password):
+        try:
+            audio = AudioSegment.from_file(audio_path)
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+                audio.export(temp_wav.name, format="wav")
+            
+            extracted_data = self._lsb_extract_from_wav(temp_wav.name)
+            os.remove(temp_wav.name)
+            return extracted_data, None
+        except Exception as e:
+            if 'temp_wav' in locals() and os.path.exists(temp_wav.name): os.remove(temp_wav.name)
+            return None, f"Audio extraction error: {e}"
+
+    def _embed_in_video(self, video_path, data, password):
+        try:
+            video_clip = VideoFileClip(video_path)
+            if not video_clip.audio:
+                return None, "Video has no audio track to embed data in."
+
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                video_clip.audio.write_audiofile(temp_audio.name, verbose=False, logger=None)
+            
+            modified_frames = self._lsb_embed_in_wav(temp_audio.name, data)
+
+            with wave.open(temp_audio.name, 'rb') as wav_file:
+                params = wav_file.getparams()
+            
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as modified_audio_file:
+                 with wave.open(modified_audio_file.name, 'wb') as new_wav:
+                    new_wav.setparams(params)
+                    new_wav.writeframes(modified_frames)
+
+            new_audio_clip = AudioFileClip(modified_audio_file.name)
+            final_clip = video_clip.set_audio(new_audio_clip)
+            
+            output_path = f"invitation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp4"
+            final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac', verbose=False, logger=None)
+            
+            os.remove(temp_audio.name)
+            os.remove(modified_audio_file.name)
+            return output_path, None
+        except Exception as e:
+            if 'temp_audio' in locals() and os.path.exists(temp_audio.name): os.remove(temp_audio.name)
+            if 'modified_audio_file' in locals() and os.path.exists(modified_audio_file.name): os.remove(modified_audio_file.name)
+            return None, f"Video embedding error: {e}"
+
+    def _extract_from_video(self, video_path, password):
+        try:
+            video_clip = VideoFileClip(video_path)
+            if not video_clip.audio:
+                return None, "Video has no audio track."
+
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_audio:
+                video_clip.audio.write_audiofile(temp_audio.name, verbose=False, logger=None)
+
+            extracted_data = self._lsb_extract_from_wav(temp_audio.name)
+            os.remove(temp_audio.name)
+            return extracted_data, None
+        except Exception as e:
+            if 'temp_audio' in locals() and os.path.exists(temp_audio.name): os.remove(temp_audio.name)
+            return None, f"Video extraction error: {e}"
+            
+class CodeHasher:
+    @staticmethod
+    def get_source_hash():
+        try:
+            with cwd():
+                with open(__file__, 'r', encoding='utf-8') as f:
+                    source_code = f.read()
+            return hashlib.sha256(source_code.encode('utf-8')).hexdigest()
+        except (TypeError, OSError): return None
+
+class CryptoManager:
+    @staticmethod
+    def generate_ephemeral_keys():
+        pk, sk = ml_dsa_87.generate_keypair()
+        return base64.b64encode(pk).decode(), base64.b64encode(sk).decode()
+
+    @staticmethod
+    def generate_persistent_keys():
+        pk_d, sk_d = ml_dsa_87.generate_keypair()
+        pk_k, sk_k = ml_kem_1024.generate_keypair()
+        return {"sign_pk": base64.b64encode(pk_d).decode(), "sign_sk": base64.b64encode(sk_d).decode(),
+                "kem_pk": base64.b64encode(pk_k).decode(), "kem_sk": base64.b64encode(sk_k).decode()}
+
+    @staticmethod
+    def sign_hash(signing_key_b64, hash_hex):
+        try:
+            sk_bytes = base64.b64decode(signing_key_b64)
+            return base64.b64encode(ml_dsa_87.sign(sk_bytes, hash_hex.encode())).decode()
+        except Exception: return None
+
+    @staticmethod
+    def verify_hash_signature(public_key_b64, signature_b64, hash_hex):
+        try:
+            pk_bytes = base64.b64decode(public_key_b64)
+            sig_bytes = base64.b64decode(signature_b64)
+            return ml_dsa_87.verify(pk_bytes, hash_hex.encode(), sig_bytes)
+        except Exception: return False
+    
+    @staticmethod
+    def sign_data(signing_key, data):
+        try:
+            return base64.b64encode(ml_dsa_87.sign(base64.b64decode(signing_key), json.dumps(data, sort_keys=True).encode())).decode()
+        except Exception: return None
+
+    @staticmethod
+    def verify_signature(signing_pk, signature, data):
+        try:
+            data_bytes = json.dumps(data, sort_keys=True).encode()
+            return ml_dsa_87.verify(base64.b64decode(signing_pk), data_bytes, base64.b64decode(signature))
+        except Exception: return False
+
+    @staticmethod
+    def create_invitation(issuer_id, issuer_keys, bootstrap_nodes):
+        data = {"issuer_id": issuer_id, "issuer_kem_pk": issuer_keys["kem_pk"], 
+                "issuer_sign_pk": issuer_keys["sign_pk"], "bootstrap_nodes": bootstrap_nodes}
+        sig = ml_dsa_87.sign(base64.b64decode(issuer_keys["sign_sk"]), json.dumps(data, sort_keys=True).encode())
+        return {"payload": data, "signature": base64.b64encode(sig).decode()}
+
+    @staticmethod
+    def verify_invitation(invitation):
+        try:
+            payload_bytes = json.dumps(invitation['payload'], sort_keys=True).encode()
+            return ml_dsa_87.verify(base64.b64decode(invitation['payload']['issuer_sign_pk']), payload_bytes, base64.b64decode(invitation['signature']))
+        except Exception: return False
+    
+    @staticmethod
+    def aead_encrypt(key_b64, data_bytes):
+        key = hashlib.sha256(base64.b64decode(key_b64)).digest()
+        aesgcm = AESGCM(key)
+        nonce = os.urandom(12)
+        ciphertext = aesgcm.encrypt(nonce, data_bytes, None)
+        return nonce + ciphertext
+
+    @staticmethod
+    def aead_decrypt(key_b64, encrypted_data_with_nonce):
+        key = hashlib.sha256(base64.b64decode(key_b64)).digest()
+        nonce = encrypted_data_with_nonce[:12]
+        ciphertext = encrypted_data_with_nonce[12:]
+        aesgcm = AESGCM(key)
+        try:
+            return aesgcm.decrypt(nonce, ciphertext, None)
+        except Exception:
             return None
 
-class DigitalSignatureManager:
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.private_key = None
-        self.public_key = None
-        self._generate_keys()
-    def _generate_keys(self):
-        self.private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=default_backend())
-        self.public_key = self.private_key.public_key()
-        self.log("New RSA key pair generated for digital signatures.")
-    def sign(self, message):
-        message_bytes = message if isinstance(message, bytes) else message.encode('utf-8')
-        signature = self.private_key.sign(
-            message_bytes,
-            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-            hashes.SHA256()
-        )
-        return base64.b64encode(signature).decode('utf-8')
-    @staticmethod
-    def verify(public_key_pem, message, signature_b64):
-        message_bytes = message if isinstance(message, bytes) else message.encode('utf-8')
+class NetworkManager(QObject):
+    message_received = Signal(bytes)
+    log_message = Signal(str)
+    message_sent_status = Signal(bool, str)
+    TLS_HANDSHAKE = b'\x16\x03\x01'; TLS_APPDATA = b'\x17\x03\x03'
+    
+    def __init__(self, port, kademlia_server):
+        super().__init__()
+        self.port = port
+        self.kademlia_server = kademlia_server
+
+    def run(self):
+        self.log_message.emit(f"Obfuscated listener starting on port {self.port}")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            public_key = serialization.load_pem_public_key(public_key_pem.encode('utf-8'), backend=default_backend())
-            signature = base64.b64decode(signature_b64.encode('utf-8'))
-            public_key.verify(
-                signature,
-                message_bytes,
-                padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
-                hashes.SHA256()
-            )
+            loop.run_until_complete(self.listen_for_messages())
+        finally:
+            loop.close()
+
+    async def listen_for_messages(self):
+        try:
+            server = await asyncio.start_server(self.handle_connection, '0.0.0.0', self.port)
+            async with server:
+                await server.serve_forever()
+        except OSError as e:
+            self.log_message.emit(f"FATAL: Could not bind to port {self.port}. {e}")
+
+    async def handle_connection(self, reader, writer):
+        try:
+            header = await reader.readexactly(3)
+            if header != self.TLS_HANDSHAKE:
+                return
+            writer.write(self.TLS_HANDSHAKE + os.urandom(32))
+            await writer.drain()
+            app_header = await reader.readexactly(3)
+            if app_header != self.TLS_APPDATA:
+                return
+            data_len = int.from_bytes(await reader.readexactly(4), 'big')
+            if data_len > 16384:
+                return
+            encrypted_payload = await reader.readexactly(data_len)
+            self.message_received.emit(encrypted_payload)
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            pass
+        finally:
+            if not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
+
+    async def send_message_to_user(self, user_id, payload_bytes):
+        status = False
+        try:
+            user_presence_str = await self.kademlia_server.get(user_id)
+            if not user_presence_str:
+                self.message_sent_status.emit(False, user_id)
+                return
+            host, port = json.loads(user_presence_str)['comm_address']
+        except (json.JSONDecodeError, KeyError):
+            self.message_sent_status.emit(False, user_id)
+            return
+
+        writer = None
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            writer.write(self.TLS_HANDSHAKE + os.urandom(64))
+            await writer.drain()
+            response = await asyncio.wait_for(reader.read(1024), timeout=5.0)
+            if not response.startswith(self.TLS_HANDSHAKE):
+                raise ConnectionError()
+            writer.write(self.TLS_APPDATA + len(payload_bytes).to_bytes(4, 'big') + payload_bytes)
+            await writer.drain()
+            status = True
+        except Exception:
+            status = False
+        finally:
+            if writer and not writer.is_closing():
+                writer.close()
+                await writer.wait_closed()
+            self.message_sent_status.emit(status, user_id)
+
+class P2PNode:
+    def __init__(self, port, bootstrap_nodes=None):
+        self.port, self.bootstrap_nodes = port, bootstrap_nodes
+        self.server = Server(); self.loop = None
+        threading.Thread(target=self.run_server, daemon=True).start()
+    def run_server(self):
+        try:
+            self.loop = asyncio.new_event_loop(); asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self.server.listen(self.port))
+            if self.bootstrap_nodes: self.loop.run_until_complete(self.server.bootstrap(self.bootstrap_nodes))
+            self.loop.run_forever()
+        except Exception: pass
+    def stop(self):
+        if self.loop and self.loop.is_running(): self.loop.call_soon_threadsafe(self.loop.stop)
+
+class ChatWindow(QMainWindow):
+    def __init__(self, display_name, dht_port, comm_port, bootstrap_node=None):
+        super().__init__()
+        self.settings = QSettings("Aetherium", "Q-Com")
+        self.user_id = None
+        self.display_name = display_name
+        self.dht_port, self.comm_port = dht_port, comm_port
+        self.profile_path = "profile.json"
+        self.crypto = CryptoManager()
+        self.steganography = SteganographyManager()
+        self.current_chat_id = None
+        self.processed_messages = deque(maxlen=200)
+        self.key_lookup_table = {}
+
+        self.init_ui()
+
+        if not self.load_state():
+            self.keys = self.crypto.generate_persistent_keys()
+            self.user_id = hashlib.sha256(base64.b64decode(self.keys['sign_pk'])).hexdigest()
+            self.contacts, self.groups, self.ostracized_users, self.accusation_log, self.chat_history = {}, {}, set(), {}, {}
+            self.save_state()
+        
+        self._rebuild_key_lookup_table()
+        self.setWindowTitle(f"Aetherium Q-Com - {self.display_name}")
+        self.populate_ui_from_state()
+
+        self.pending_challenges, self.user_message_timestamps = {}, {}
+        self.bootstrap_nodes = [bootstrap_node] if bootstrap_node else []
+        self.kademlia_node = P2PNode(dht_port, self.bootstrap_nodes)
+        self.network_manager = NetworkManager(self.comm_port, self.kademlia_node.server)
+        self.network_thread = QThread()
+        self.network_manager.moveToThread(self.network_thread)
+        self.network_thread.started.connect(self.network_manager.run)
+        self.network_manager.log_message.connect(self.log)
+        self.network_manager.message_received.connect(self.on_raw_message_received)
+        self.network_manager.message_sent_status.connect(self.on_message_sent_status)
+        self.network_thread.start()
+        self.announce_presence()
+        self.resize(900, 700)
+        self.read_settings()
+    
+    def log(self, message):
+        timestamp = datetime.now().strftime("[%H:%M:%S]")
+        self.log_display.append(f"{timestamp} {message}")
+    
+    def show_status_message(self, message, timeout=4000):
+        self.statusBar().showMessage(message, timeout)
+
+    def init_ui(self):
+        self.setWindowTitle("Aetherium Q-Com")
+        self.statusBar()
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        main_layout = QHBoxLayout(self.central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        self.sidebar = QWidget()
+        self.sidebar.setObjectName("Sidebar")
+        sidebar_layout = QVBoxLayout(self.sidebar)
+        sidebar_layout.setContentsMargins(5, 5, 5, 5)
+        sidebar_layout.setSpacing(10)
+        sidebar_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.btn_chat_view = self.create_sidebar_button("Chat")
+        self.btn_about_view = self.create_sidebar_button("About")
+        self.btn_license_view = self.create_sidebar_button("License")
+        
+        sidebar_layout.addWidget(self.btn_chat_view)
+        sidebar_layout.addWidget(self.btn_about_view)
+        sidebar_layout.addWidget(self.btn_license_view)
+
+        self.stacked_widget = QStackedWidget()
+        self.chat_widget = self.create_chat_widget()
+        self.about_widget = self.create_about_widget()
+        self.license_widget = self.create_license_widget()
+
+        self.stacked_widget.addWidget(self.chat_widget)
+        self.stacked_widget.addWidget(self.about_widget)
+        self.stacked_widget.addWidget(self.license_widget)
+
+        main_layout.addWidget(self.sidebar)
+        main_layout.addWidget(self.stacked_widget)
+        
+        self.btn_chat_view.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(0))
+        self.btn_about_view.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(1))
+        self.btn_license_view.clicked.connect(lambda: self.stacked_widget.setCurrentIndex(2))
+
+    def create_sidebar_button(self, text):
+        button = QPushButton(text)
+        button.setObjectName("SidebarButton")
+        return button
+
+    def create_chat_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        
+        top_layout = QHBoxLayout()
+        top_layout.setContentsMargins(10, 10, 10, 5)
+        top_layout.setSpacing(15)
+        
+        self.btn_add_contact = QPushButton("Add Contact")
+        self.btn_add_contact.setToolTip("Create or accept an invitation to add a new contact")
+        self.btn_add_contact.clicked.connect(self.add_contact_dialog)
+        self.btn_create_group = QPushButton("Create Group")
+        self.btn_create_group.setToolTip("Create a new group chat")
+        self.btn_create_group.clicked.connect(self.create_group)
+
+        top_layout.addStretch()
+        top_layout.addWidget(self.btn_add_contact)
+        top_layout.addStretch()
+        top_layout.addWidget(self.btn_create_group)
+        top_layout.addStretch()
+
+        self.btn_change_name = QPushButton("Change Name")
+        self.btn_change_name.setToolTip("Change your display name")
+        self.btn_change_name.clicked.connect(self.change_display_name)
+        top_layout.addWidget(self.btn_change_name)
+        top_layout.addStretch()
+
+        self.entity_list_widget = QListWidget()
+        self.entity_list_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.entity_list_widget.customContextMenuRequested.connect(self.show_entity_context_menu)
+        self.entity_list_widget.itemClicked.connect(self.on_chat_selected)
+        self.chat_display = QTextEdit(); self.chat_display.setReadOnly(True)
+        self.message_input = QLineEdit(); self.message_input.setPlaceholderText("Select a contact or group...")
+        self.message_input.returnPressed.connect(self.send_message_wrapper)
+        self.message_input.textChanged.connect(self.on_text_changed)
+        self.message_input.setEnabled(False)
+        self.btn_send = QPushButton("Send")
+        self.btn_send.setObjectName("SendButton")
+        self.btn_send.setToolTip("Send the message to the selected contact or group")
+        self.btn_send.clicked.connect(self.send_message_wrapper)
+        self.btn_send.setEnabled(False)
+        self.log_display = QTextEdit(); self.log_display.setReadOnly(True); self.log_display.setMaximumHeight(100)
+        
+        layout.addLayout(top_layout)
+        layout.addWidget(QLabel("Contacts & Groups:"), 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.entity_list_widget)
+        layout.addWidget(QLabel("Chat:"), 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.chat_display)
+        
+        send_layout = QHBoxLayout()
+        send_layout.addWidget(self.message_input)
+        send_layout.addWidget(self.btn_send)
+        layout.addLayout(send_layout)
+        
+        layout.addWidget(QLabel("System Log:"), 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.log_display)
+        self.log(f"Code integrity verified.")
+        return widget
+
+    def create_about_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.setContentsMargins(20, 20, 20, 20)
+        title = QLabel("About Aetherium Q-Com")
+        title.setObjectName("TitleLabel")
+        
+        body_text = """
+        <b>Aetherium QCom</b><br>
+        Version 0.1.0<br><br>
+        A secure, decentralized communication platform.<br>
+        This application uses quantum-resistant cryptography to ensure the privacy and security of your communications.<br><br>
+        Yaron Koresh © All rights reserved<br>
+        """
+        body = QLabel(body_text)
+        body.setWordWrap(True)
+        
+        layout.addWidget(title)
+        layout.addWidget(body)
+        return widget
+
+    def create_license_widget(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        title = QLabel("MIT License")
+        title.setObjectName("TitleLabel")
+        
+        license_text = """
+        Copyright (c) 2025 Yaron Koresh
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in all
+        copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+        SOFTWARE.
+        """
+        license_label = QTextEdit(license_text)
+        license_label.setReadOnly(True)
+        
+        layout.addWidget(title)
+        layout.addWidget(license_label)
+        return widget
+
+    def add_contact_dialog(self):
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Add a New Contact")
+        msg_box.setText("How would you like to add a contact?")
+        msg_box.setIcon(QMessageBox.Icon.Question)
+        create_btn = msg_box.addButton("Create New Invitation", QMessageBox.ButtonRole.ActionRole)
+        accept_btn = msg_box.addButton("Accept Existing Invitation", QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton(QMessageBox.StandardButton.Cancel)
+        msg_box.exec()
+
+        if msg_box.clickedButton() == create_btn:
+            self.create_invitation()
+        elif msg_box.clickedButton() == accept_btn:
+            self.accept_invitation()
+
+    def on_text_changed(self, text):
+        self.btn_send.setEnabled(bool(self.current_chat_id and text.strip()))
+
+    def save_state(self):
+        try:
+            state_data = {"user_id": self.user_id, "display_name": self.display_name,
+                          "keys": self.keys, "contacts": self.contacts, "groups": self.groups,
+                          "ostracized_users": list(self.ostracized_users), "accusation_log": self.accusation_log,
+                          "chat_history": self.chat_history}
+            state_json = json.dumps(state_data, sort_keys=True).encode()
+            state_hash = hashlib.sha256(state_json).hexdigest()
+            signature = self.crypto.sign_hash(self.keys['sign_sk'], state_hash)
+            vault = {"data": base64.b64encode(state_json).decode(), "signature": signature}
+            with cwd():
+                with open(self.profile_path, 'w') as f: json.dump(vault, f)
+            self.show_status_message("Profile saved successfully")
+            return True
+        except Exception: return False
+
+    def load_state(self):
+        if not os.path.exists(self.profile_path): return False
+        try:
+            with cwd():
+                with open(self.profile_path, 'r') as f: vault = json.load(f)
+            state_json_b64 = vault['data']; signature = vault['signature']
+            state_json = base64.b64decode(state_json_b64)
+            state_hash = hashlib.sha256(state_json).hexdigest()
+            state_data = json.loads(state_json)
+            
+            temp_keys = state_data['keys']
+            if not self.crypto.verify_hash_signature(temp_keys['sign_pk'], signature, state_hash):
+                raise ValueError("State signature invalid")
+            
+            self.keys = state_data["keys"]
+            self.contacts = state_data.get("contacts", {})
+            self.groups = state_data.get("groups", {})
+            self.ostracized_users = set(state_data.get("ostracized_users", []))
+            self.accusation_log = state_data.get("accusation_log", {})
+            self.chat_history = state_data.get("chat_history", {})
+            self.user_id = state_data.get("user_id")
+            self.display_name = state_data.get("display_name", self.user_id)
+            self.log("Secure profile loaded successfully.")
             return True
         except Exception:
+            self.log("Profile corrupted or tampered with. It will be deleted on exit.")
+            try: os.remove(self.profile_path)
+            except OSError: pass
             return False
 
-class MachineFingerprintManager:
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.fingerprint = self._get_machine_fingerprint()
-        self.is_vm = self._check_for_vm()
-        log_msg = f"Machine fingerprint loaded: {self.fingerprint[:12]}..."
-        if self.is_vm:
-            log_msg += " (Warning: Virtual Machine detected)"
-        self.log(log_msg)
+    def _rebuild_key_lookup_table(self):
+        self.key_lookup_table.clear()
+        if hasattr(self, 'keys') and self.keys:
+            key_b64 = self.keys.get('sign_sk')
+            if key_b64:
+                key_hash = hashlib.sha256(base64.b64decode(key_b64)).digest()
+                self.key_lookup_table[key_hash[:8]] = (key_b64, self.keys['sign_pk'])
+        
+        for cid, cinfo in self.contacts.items():
+            key_b64 = cinfo.get('otp_key')
+            if key_b64:
+                key_hash = hashlib.sha256(base64.b64decode(key_b64)).digest()
+                self.key_lookup_table[key_hash[:8]] = (key_b64, cid)
+        
+        for gid, ginfo in self.groups.items():
+            key_b64 = ginfo.get('group_key')
+            if key_b64:
+                key_hash = hashlib.sha256(base64.b64decode(key_b64)).digest()
+                self.key_lookup_table[key_hash[:8]] = (key_b64, gid)
+        self.log(f"Key lookup table rebuilt with {len(self.key_lookup_table)} keys.")
 
-    def _check_for_vm(self):
-        vm_identifiers = ['vmware', 'virtualbox', 'qemu', 'xen', 'hyper-v']
-        try:
-            if platform.system() == "Windows" and 'wmi' in sys.modules:
-                c = wmi.WMI()
-                for s in c.Win32_ComputerSystem():
-                    if s.Model and any(vm_id in s.Model.lower() for vm_id in vm_identifiers):
-                        return True
-        except Exception:
-            return False
-        return False
+    def change_display_name(self):
+        new_name, ok = QInputDialog.getText(self, "Change Display Name", "Enter your new display name:", text=self.display_name)
+        if ok and new_name.strip():
+            self.display_name = new_name.strip()
+            self.setWindowTitle(f"Aetherium Q-Com - {self.display_name}")
+            self.save_state()
+            self.show_status_message("Display name updated.")
 
-    def _get_machine_fingerprint(self):
-        system = platform.system()
-        identifiers = []
-        try:
-            if system == "Windows" and 'wmi' in sys.modules:
-                c = wmi.WMI()
-                identifiers.append(c.Win32_ComputerSystemProduct()[0].UUID)
-            elif system == "Linux" and os.path.exists("/etc/machine-id"):
-                with open("/etc/machine-id", "r") as f: identifiers.append(f.read().strip())
-            elif system == "Darwin":
-                output = subprocess.check_output(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]).decode()
-                identifiers.append(output.split("IOPlatformUUID")[1].split("=")[1].strip().replace('"', ''))
-        except Exception:
-            pass
-        identifiers.append(platform.processor())
-        identifiers.append(str(socket.gethostname()))
-        combined_string = "".join(identifiers)
-        return hashlib.sha256(combined_string.encode('utf-8')).hexdigest()
+    def create_group(self):
+        group_name, ok = QInputDialog.getText(self, "Create Group", "Enter a name for the new group:")
+        if not (ok and group_name.strip()):
+            return
+        
+        clean_group_name = group_name.strip()
+        group_id = hashlib.sha256(clean_group_name.encode()).hexdigest()[:16]
+        
+        if group_id in self.groups:
+            QMessageBox.warning(self, "Group Exists", f"A group named '{clean_group_name}' already exists.")
+            return
 
-class IdentityManager:
-    ADJECTIVES = ['bright', 'dark', 'quiet', 'loud', 'happy', 'silly', 'fast', 'slow', 'warm', 'cold', 'red', 'blue', 'green', 'sharp', 'round']
-    NOUNS = ['fox', 'dog', 'cat', 'tree', 'rock', 'bird', 'fish', 'sun', 'moon', 'star', 'river', 'lake', 'cloud', 'wind', 'fire']
-    def __init__(self, log_callback, machine_fingerprint):
-        self.log = log_callback
-        self.machine_fingerprint = machine_fingerprint
-        self.private_key = None
-        self.public_id = None
-        self.username = None
-        self._generate_identity()
-    def _generate_hash(self, data):
-        return hashlib.sha256(data.encode('utf-8')).hexdigest()
-    def generate_username_from_id(self, public_id):
-        random.seed(public_id)
-        adj = random.choice(self.ADJECTIVES)
-        noun = random.choice(self.NOUNS)
-        unique_suffix = public_id[:4]
-        return f"{adj}-{noun}-{unique_suffix}"
-    def _generate_identity(self):
-        seed = self.machine_fingerprint
-        self.private_key = base64.b64encode(hashlib.sha256(seed.encode('utf-8')).digest()).decode('utf-8')
-        self.public_id = self._generate_hash(self.private_key)
-        self.username = self.generate_username_from_id(self.public_id)
-        self.log(f"Identity loaded. Your permanent username is '{self.username}'")
+        self.groups[group_id] = {
+            "display_name": clean_group_name,
+            "admin": self.user_id,
+            "members": [self.user_id]
+        }
+        self.save_state()
+        self.populate_ui_from_state()
+        self.show_status_message(f"Group '{clean_group_name}' created.")
 
-class ContactManager:
-    CONTACTS_FILE = "contacts.json"
-    def __init__(self, log_callback, identity_manager):
-        self.log = log_callback
-        self.identity_manager = identity_manager
-        self.contacts = {}
-        self.load_contacts()
-    def load_contacts(self):
-        if os.path.exists(self.CONTACTS_FILE):
-            with open(self.CONTACTS_FILE, 'r') as f: self.contacts = json.load(f)
-            self.log(f"Loaded {len(self.contacts)} contacts.")
+    def on_chat_selected(self, item):
+        chat_data = item.data(Qt.ItemDataRole.UserRole)
+        self.current_chat_id = chat_data['id']
+        self.message_input.setEnabled(True)
+        self.message_input.setPlaceholderText(f"Message {chat_data['display_name']}...")
+        self.chat_display.clear()
+        self.on_text_changed(self.message_input.text())
+        
+        if self.current_chat_id in self.chat_history:
+            for message in self.chat_history[self.current_chat_id]:
+                self.chat_display.append(message)
+    
+    def send_message_wrapper(self):
+        if not self.current_chat_id:
+            QMessageBox.warning(self, "No Chat Selected", "Please select a contact or group to send a message.")
+            return
+            
+        message_text = self.message_input.text().strip()
+        if not message_text:
+            return
+
+        payload = {
+            "type": "text_message",
+            "sender_id": self.user_id,
+            "sender_display_name": self.display_name,
+            "message": message_text
+        }
+
+        target_info = self.contacts.get(self.current_chat_id)
+        chat_key = target_info.get("otp_key") if target_info else None
+
+        if self.current_chat_id in self.groups:
+            group_info = self.groups.get(self.current_chat_id)
+            payload['group_id'] = self.current_chat_id
+            for member_id in group_info['members']:
+                if member_id == self.user_id:
+                    continue
+                member_contact_info = self.contacts.get(member_id)
+                if member_contact_info and member_contact_info.get('otp_key'):
+                    member_key = member_contact_info['otp_key']
+                    self._send_encrypted_message(member_id, payload, member_key)
+                else:
+                    self.log(f"Warning: No key found for group member {member_id}. Cannot send message.")
         else:
-            self.log("No contacts file found. Starting with an empty list.")
-    def save_contacts(self):
-        with open(self.CONTACTS_FILE, 'w') as f: json.dump(self.contacts, f, indent=4)
-        self.log("Contacts saved.")
-    def add_contact(self, full_public_id: str, public_key=None):
-        if not full_public_id or len(full_public_id) != 64:
-            return "Internal Error: Invalid Public ID provided.", False
-        username = self.identity_manager.generate_username_from_id(full_public_id)
-        if username in self.contacts and self.contacts[username]['public_id'] != full_public_id:
-             return f"Error: A different contact is already saved with the name '{username}'.", False
-        self.contacts[username] = {'public_id': full_public_id, 'public_key': public_key}
-        self.save_contacts()
-        return f"Contact '{username}' added/updated successfully.", True
-    def get_public_id(self, username):
-        return self.contacts.get(username, {}).get('public_id')
-    def get_public_key(self, username):
-        return self.contacts.get(username, {}).get('public_key')
-    def get_username_by_id(self, public_id):
-        generated_username = self.identity_manager.generate_username_from_id(public_id)
-        if generated_username in self.contacts and self.contacts[generated_username]['public_id'] == public_id:
-            return generated_username
+            if not chat_key:
+                self.log(f"Error: Could not find encryption key for {self.current_chat_id}.")
+                return
+            self._send_encrypted_message(self.current_chat_id, payload, chat_key)
+
+        history_msg = f"{self.display_name} ({datetime.now().strftime('%H:%M')}): {message_text}"
+        if self.current_chat_id not in self.chat_history:
+            self.chat_history[self.current_chat_id] = []
+        self.chat_history[self.current_chat_id].append(history_msg)
+        self.chat_display.append(history_msg)
+
+        self.message_input.clear()
+        self.save_state()
+
+    def populate_ui_from_state(self):
+        self.entity_list_widget.clear()
+        for cid, cinfo in self.contacts.items():
+            contact_display_name = cinfo.get("display_name", cid)
+            status = cinfo.get("status", "unknown")
+            item = QListWidgetItem(f"{contact_display_name} ({status})")
+            item.setData(Qt.ItemDataRole.UserRole, {"type": "contact", "id": cid, "display_name": contact_display_name})
+            if cid in self.ostracized_users:
+                item.setForeground(QBrush(QColor("red")))
+                item.setText(f"{contact_display_name} (OSTRACIZED)")
+            self.entity_list_widget.addItem(item)
+        for gid, ginfo in self.groups.items():
+            group_display_name = ginfo.get('display_name', gid)
+            item = QListWidgetItem(f"{group_display_name} [Group]") 
+            item.setData(Qt.ItemDataRole.UserRole, {"type": "group", "id": gid, "display_name": group_display_name})
+            self.entity_list_widget.addItem(item)
+
+    def invite_to_group(self, contact_id, group_id):
+        if group_id not in self.groups or self.groups[group_id]['admin'] != self.user_id:
+            self.log(f"Error: User is not an admin of group '{group_id}'.")
+            return
+        
+        contact_info = self.contacts.get(contact_id)
+        if not contact_info or 'otp_key' not in contact_info:
+            self.log(f"Error: Cannot invite {contact_id}. No secure channel established.")
+            return
+
+        group_info = self.groups[group_id]
+        
+        invite_payload = {
+            "type": "group_invite",
+            "sender_id": self.user_id,
+            "sender_display_name": self.display_name,
+            "group_id": group_id,
+            "group_info": group_info
+        }
+
+        self._send_encrypted_message(contact_id, invite_payload, contact_info['otp_key'])
+        self.show_status_message(f"Invitation sent to {contact_id}.")
+
+    def announce_presence(self):
+        async def do_announce():
+            data = {"kem_pk": self.keys['kem_pk'], "sign_pk": self.keys['sign_pk'], "comm_address": ('127.0.0.1', self.comm_port),
+                    "display_name": self.display_name}
+            await self.kademlia_node.server.set(self.user_id, json.dumps(data))
+            self.log("Presence announced on the network.")
+        if self.kademlia_node.loop:
+            asyncio.run_coroutine_threadsafe(do_announce(), self.kademlia_node.loop)
+        
+        threading.Timer(900, self.announce_presence).start()
+    
+    def on_raw_message_received(self, raw_bytes):
+        if len(raw_bytes) < 8:
+            return
+        
+        key_hint = raw_bytes[:8]
+        encrypted_payload = raw_bytes[8:]
+        
+        key_info = self.key_lookup_table.get(key_hint)
+        if not key_info:
+            return
+        
+        key_b64, key_owner_id = key_info
+        decrypted_bytes = self.crypto.aead_decrypt(key_b64, encrypted_payload)
+        
+        if decrypted_bytes:
+            try:
+                msg = json.loads(decrypted_bytes)
+                if isinstance(msg, dict) and 'sender_id' in msg and 'timestamp' in msg:
+                    self.handle_incoming_message(msg, key_owner_id)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                pass
+
+    def on_message_sent_status(self, success, user_id):
+        display_name = user_id
+        if user_id in self.contacts:
+            display_name = self.contacts[user_id].get('display_name', user_id)
+
+        if success:
+            self.show_status_message(f"Message to {display_name} sent successfully.")
+        else:
+            self.show_status_message(f"Failed to send message to {display_name}.")
+
+    def _send_encrypted_message(self, target_id, payload, key):
+        self.log(f"Sending message to {target_id}...")
+        payload['timestamp'] = time.time()
+        payload_bytes = json.dumps(payload, sort_keys=True).encode()
+        encrypted_bytes = self.crypto.aead_encrypt(key, payload_bytes)
+        
+        key_hash = hashlib.sha256(base64.b64decode(key)).digest()
+        key_hint = key_hash[:8]
+        
+        final_payload = key_hint + encrypted_bytes
+        asyncio.run_coroutine_threadsafe(self.network_manager.send_message_to_user(target_id, final_payload), self.kademlia_node.loop)
+        
+    def show_entity_context_menu(self, position):
+        item = self.entity_list_widget.itemAt(position)
+        if not item or not item.data(Qt.ItemDataRole.UserRole) or item.data(Qt.ItemDataRole.UserRole)['type'] != 'contact':
+            return
+        contact_id = item.data(Qt.ItemDataRole.UserRole)['id']
+        contact_info = self.contacts.get(contact_id, {})
+        
+        menu = self.entity_list_widget.createStandardContextMenu()
+
+        if contact_id in self.ostracized_users:
+            if contact_id in self.accusation_log:
+                action = menu.addAction("View Accusation Log")
+                action.triggered.connect(lambda: self.show_accusation_log(contact_id))
+        elif contact_info.get('status') == 'confirmed':
+            action = menu.addAction("Ostracize User")
+            action.triggered.connect(lambda: self.context_ostracize_user(contact_id))
+            
+            menu.addSeparator()
+
+            has_admin_groups = False
+            for group_id, group_info in self.groups.items():
+                if group_info['admin'] == self.user_id:
+                    has_admin_groups = True
+                    action = menu.addAction(f"Invite to '{group_info.get('display_name', group_id)}'")
+                    action.triggered.connect(lambda _, c=contact_id, g=group_id: self.invite_to_group(c, g))
+        
+        if not menu.isEmpty():
+            menu.exec(self.entity_list_widget.mapToGlobal(position))
+
+    def show_accusation_log(self, user_id):
+        if user_id in self.accusation_log:
+            accusers = "\n- ".join(self.accusation_log[user_id])
+            QMessageBox.information(self, "Accusation Log", f"User '{self.contacts.get(user_id, {}).get('display_name', user_id)}' was accused by:\n- {accusers}")
+
+    def context_ostracize_user(self, user_id):
+        display_name = self.contacts.get(user_id, {}).get('display_name', user_id)
+        reply = QMessageBox.question(self, "Confirm Ostracism", 
+                                     f"Are you sure you want to ostracize {display_name}?\n"
+                                     "You will no longer receive messages from them, and this action cannot be undone.",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.ostracize_user(user_id)
+
+    def create_invitation(self):
+        password, ok = QInputDialog.getText(self, "Create Invitation", "Enter a password:")
+        if not (ok and password):
+            return
+        
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Media File", "", "Media Files (*.png *.jpg *.jpeg *.bmp *.wav *.mp3 *.m4a *.mp4 *.mov)")
+        if not file_path:
+            return
+
+        invitation_data = self.crypto.create_invitation(self.user_id, self.keys, [('127.0.0.1', self.dht_port)])
+        invitation_bytes = json.dumps(invitation_data, sort_keys=True).encode()
+        
+        output_path, error = self.steganography.embed(file_path, invitation_bytes, password)
+        
+        if error:
+            QMessageBox.critical(self, "Error", f"Could not create invitation: {error}")
+        else:
+            self.show_status_message(f"Invitation created in {output_path}")
+
+    def accept_invitation(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Open Invitation Media", "", "Media Files (*.png *.jpg *.jpeg *.bmp *.wav *.mp3 *.m4a *.mp4 *.mov)")
+        if not file_path: return
+        password, ok = QInputDialog.getText(self, "Accept Invitation", "Enter password:")
+        if not (ok and password): return
+        inv_bytes, error = self.steganography.extract(file_path, password)
+        if error: QMessageBox.critical(None, "Error", str(error)); return
+        try:
+            invitation = json.loads(inv_bytes)
+            if not self.crypto.verify_invitation(invitation): raise ValueError
+        except (json.JSONDecodeError, ValueError): QMessageBox.critical(None, "Security Alert", "Invalid or tampered invitation."); return
+        
+        issuer_info = invitation['payload']
+        issuer_id = issuer_info['issuer_id']
+        
+        if issuer_id == self.user_id: QMessageBox.warning(None, "Error", "Cannot accept an invitation from yourself."); return
+        if issuer_id in self.contacts: QMessageBox.information(None, "Info", f"{issuer_id} is already a contact."); return
+
+        try:
+            issuer_kem_pk = base64.b64decode(issuer_info['issuer_kem_pk'])
+            ciphertext, shared_secret = ml_kem_1024.encrypt(issuer_kem_pk)
+        except Exception as e: QMessageBox.critical(None, "Crypto Error", f"Failed to create secure channel: {e}"); return
+
+        self.contacts[issuer_id] = {"kem_pk": issuer_info['issuer_kem_pk'], "sign_pk": issuer_info['issuer_sign_pk'], 
+                                   "otp_key": base64.b64encode(shared_secret).decode(), "status": "confirmed",
+                                   "display_name": issuer_info.get("display_name", issuer_id)}
+        
+        if issuer_id not in self.chat_history: self.chat_history[issuer_id] = []
+        self.chat_history[issuer_id].append(f"*** You have connected with {issuer_info.get('display_name', issuer_id)} ***")
+
+        self.populate_ui_from_state()
+        self.save_state()
+        self._rebuild_key_lookup_table()
+        
+        req_payload = {"type": "contact_request", "sender_id": self.user_id, "kem_pk": self.keys['kem_pk'], "sign_pk": self.keys['sign_pk'],
+                       "kem_ciphertext": base64.b64encode(ciphertext).decode(), "display_name": self.display_name}
+        signature = self.crypto.sign_data(self.keys['sign_sk'], req_payload)
+        full_req = {"payload": req_payload, "signature": signature}
+
+        handshake_key = base64.b64encode(shared_secret).decode()
+        self._send_encrypted_message(issuer_id, full_req, handshake_key)
+        self.show_status_message(f"Contact request sent to {issuer_id}.")
+
+    def ostracize_user(self, user_id, proof=None):
+        if user_id == self.user_id or user_id in self.ostracized_users: return
+        self.log(f"OSTRACIZING USER: {user_id}.")
+        self.ostracized_users.add(user_id)
+        if proof:
+            accusation = {"accuser": self.user_id, "accused": user_id, "proof": proof}
+            accusation_payload = {"type": "accusation", "data": accusation}
+            signature = self.crypto.sign_data(self.keys['sign_sk'], accusation_payload)
+            if signature:
+                full_accusation_msg = {"payload": accusation_payload, "signature": signature}
+                for cid, cinfo in self.contacts.items():
+                    if cinfo.get('status') == 'confirmed' and cid not in self.ostracized_users and cinfo.get('otp_key'):
+                        self._send_encrypted_message(cid, full_accusation_msg, cinfo['otp_key'])
+        self.populate_ui_from_state()
+        self.save_state()
+
+    def handle_incoming_message(self, msg, key_owner_id):
+        try:
+            msg_bytes = json.dumps(msg, sort_keys=True).encode()
+            msg_hash = hashlib.sha256(msg_bytes).hexdigest()
+            if msg_hash in self.processed_messages:
+                self.log(f"Duplicate message received from {msg.get('sender_id')}. Discarding.")
+                return
+            self.processed_messages.append(msg_hash)
+        except Exception:
+            return
+
+        sender_id = msg.get("sender_id")
+        if not sender_id or sender_id in self.ostracized_users: return
+        if time.time() - msg.get('timestamp', 0) > 120: return
+        msg_type = msg.get("type")
+
+        if msg_type == "contact_request":
+            if key_owner_id != self.keys['sign_pk']: return
+            payload = msg.get('payload', {}); signature = msg.get('signature')
+            if not (payload and signature and self.crypto.verify_signature(payload.get('sign_pk'), signature, payload)): return
+            shared_secret = ml_kem_1024.decrypt(base64.b64decode(self.keys['kem_sk']), base64.b64decode(payload['kem_ciphertext']))
+            self.contacts[sender_id] = {"kem_pk": payload['kem_pk'], "sign_pk": payload['sign_pk'], "otp_key": base64.b64encode(shared_secret).decode(), 
+                                       "status": "confirmed", "display_name": payload.get("display_name")}
+            
+            if sender_id not in self.chat_history: self.chat_history[sender_id] = []
+            self.chat_history[sender_id].append(f"*** You have connected with {payload.get('display_name', sender_id)} ***")
+
+            self.populate_ui_from_state()
+            self.save_state()
+            self._rebuild_key_lookup_table()
+            resp_payload = {"type": "contact_response", "sender_id": self.user_id, "display_name": self.display_name}
+            self._send_encrypted_message(sender_id, resp_payload, base64.b64encode(shared_secret).decode())
+        elif msg.get("type") == "group_invite":
+            group_id = msg.get("group_id")
+            group_info = msg.get("group_info")
+            if not (group_id and group_info):
+                return
+            self.groups[group_id] = group_info
+            if group_id not in self.chat_history:
+                self.chat_history[group_id] = []
+            self.chat_history[group_id].append(f"*** You have joined the group: {group_info.get('display_name', group_id)} ***")
+            self.log(f"Successfully joined group: {group_info.get('display_name', group_id)}")
+            self.populate_ui_from_state()
+            self.save_state()
+        elif msg.get("type") == "accusation":
+            accusation_payload = msg.get('payload', {}); signature = msg.get('signature')
+            accuser = accusation_payload.get('data', {}).get('accuser')
+            if not all([accusation_payload, signature, accuser]): return
+            if accuser in self.contacts and self.contacts[accuser].get('status') == 'confirmed':
+                if self.crypto.verify_signature(self.contacts[accuser]['sign_pk'], signature, accusation_payload):
+                    accused = accusation_payload.get('data', {}).get('accused')
+                    if accused:
+                        if accused not in self.accusation_log: self.accusation_log[accused] = []
+                        if accuser not in self.accusation_log[accused]: self.accusation_log[accused].append(accuser)
+                        if len(self.accusation_log[accused]) >= 3:
+                            self.ostracize_user(accused, proof=None)
+        elif msg.get("type") == "text_message":
+            sender_display_name = msg.get("sender_display_name", sender_id)
+            message_text = msg.get("message")
+            if not message_text: return
+            
+            chat_id = msg.get("group_id", sender_id)
+
+            if chat_id not in self.chat_history: self.chat_history[chat_id] = []
+            
+            history_msg = f"{sender_display_name} ({datetime.now().strftime('%H:%M')}): {message_text}"
+            self.chat_history[chat_id].append(history_msg)
+            
+            if self.current_chat_id == chat_id:
+                self.chat_display.append(history_msg)
+            else:
+                log_display_name = chat_id
+                if chat_id == sender_id:
+                    log_display_name = sender_display_name
+                elif chat_id in self.groups:
+                    log_display_name = self.groups[chat_id].get('display_name', chat_id)
+                self.log(f"New message from {log_display_name}.")
+        
+        self.save_state()
+
+    def write_settings(self):
+        self.settings.setValue("geometry", self.saveGeometry())
+
+    def read_settings(self):
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+
+    def closeEvent(self, event):
+        self.write_settings()
+        self.log("Saving secure state and shutting down...")
+        self.save_state()
+        self.kademlia_node.stop()
+        if self.network_thread.isRunning(): self.network_thread.quit(); self.network_thread.wait(3000)
+        event.accept()
+
+def get_free_ports(count=2):
+    sockets, ports = [], []
+    for _ in range(count):
+        s = socket.socket(); s.bind(('', 0)); ports.append(s.getsockname()[1]); sockets.append(s)
+    for s in sockets: s.close()
+    return ports
+
+@contextmanager
+def cwd(dir=None):
+    if not dir:
+        dir = os.path.dirname(os.path.realpath(__file__))
+    owd = os.getcwd()
+    try:
+        os.chdir(dir)
+        yield dir
+    finally:
+        os.chdir(owd)
+
+class InteractiveShell(cmd.Cmd):
+    intro = 'Welcome to the Aetherium Q-Com interactive shell. Type help or ? to list commands.\n'
+    prompt = 'Aetherium> '
+
+    def do_exit(self, arg):
+        'Exit the interactive shell.'
+        print('Goodbye.')
+        return True
+
+    def do_keygen(self, arg):
+        'Generate new developer master keys.'
+        handle_keygen()
+
+    def do_sign(self, arg):
+        'Sign the application source code.'
+        handle_sign()
+
+    def do_invite(self, arg):
+        'Manage invitations. Usage: invite <create|read> --media <path> --password <pass>'
+        parser = argparse.ArgumentParser(prog='invite', description='Create or read invitations from media files.')
+        subparsers = parser.add_subparsers(dest='invite_command', required=True)
+        
+        create_parser = subparsers.add_parser('create')
+        create_parser.add_argument('--media', required=True)
+        create_parser.add_argument('--password', required=True)
+
+        read_parser = subparsers.add_parser('read')
+        read_parser.add_argument('--media', required=True)
+        read_parser.add_argument('--password', required=True)
+
+        try:
+            args = parser.parse_args(shlex.split(arg))
+            handle_invite(args)
+        except SystemExit:
+            pass
+        except Exception as e:
+            print(f"Error: {e}")
+
+def load_cli_profile():
+    profile_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "profile.json")
+    if not os.path.exists(profile_path):
+        print("FATAL: No profile.json found. Please run the GUI first to create a profile.")
+        return None
+    try:
+        with open(profile_path, 'r') as f:
+            vault = json.load(f)
+        state_json = base64.b64decode(vault['data'])
+        state_data = json.loads(state_json)
+        return state_data
+    except Exception as e:
+        print(f"FATAL: Could not load or parse profile.json. Error: {e}")
         return None
 
-class GroupChatManager:
-    GROUPS_FILE = "groups.json"
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.groups = {}
-        self.load_groups()
-    def load_groups(self):
-        if os.path.exists(self.GROUPS_FILE):
-            with open(self.GROUPS_FILE, 'r') as f: self.groups = json.load(f)
-            self.log(f"Loaded {len(self.groups)} groups.")
-        else: self.log("No groups file found.")
-    def save_groups(self):
-        with open(self.GROUPS_FILE, 'w') as f: json.dump(self.groups, f, indent=4)
-        self.log("Groups saved.")
-    def create_group(self, group_name, member_usernames):
-        if not group_name: return "Group name cannot be empty.", False
-        if group_name in self.groups: return "A group with this name already exists.", False
-        valid_members = [un for un in member_usernames if un]
-        if not valid_members: return "Group must have at least one member.", False
-        self.groups[group_name] = valid_members
-        self.save_groups()
-        return f"Group '{group_name}' created.", True
-    def get_group_members(self, group_name):
-        return self.groups.get(group_name, [])
-
-class MediaSteganographyManager:
-    def __init__(self, shared_secret: str):
-        if not shared_secret:
-            raise ValueError("A shared secret is required for steganography.")
-        self.shared_secret = shared_secret.encode('utf-8')
-
-    def _get_seed(self, carrier_path: str) -> bytes:
-        return hashlib.sha256(self.shared_secret).digest()
-
-    def _get_pixel_sequence(self, seed: bytes, width: int, height: int, num_pixels: int):
-        rng = random.Random(seed)
-        total_pixels = width * height
-        if num_pixels > total_pixels:
-            raise ValueError("Not enough pixels in the image/frame to store the data.")
-        
-        all_indices = list(range(total_pixels))
-        rng.shuffle(all_indices)
-        
-        for i in range(num_pixels):
-            index = all_indices[i]
-            x = index % width
-            y = index // width
-            yield (x, y)
-            
-    def _get_frame_sequence(self, seed: bytes, total_frames: int, num_frames: int):
-        rng = random.Random(seed)
-        if num_frames > total_frames:
-            raise ValueError("Not enough frames in the video to store the data.")
-        
-        all_indices = list(range(total_frames))
-        rng.shuffle(all_indices)
-        return sorted(all_indices[:num_frames])
-
-    def _embed_in_image(self, image_path: str, payload_bits: str) -> str:
-        img = Image.open(image_path).convert('RGB')
-        width, height = img.size
-        required_pixels = math.ceil(len(payload_bits) / 3)
-        
-        seed = self._get_seed(image_path)
-        pixel_sequence = self._get_pixel_sequence(seed, width, height, required_pixels)
-        
-        pixels = img.load()
-        bit_index = 0
-        
-        for x, y in pixel_sequence:
-            if bit_index >= len(payload_bits): break
-            r, g, b = pixels[x, y]
-            
-            if bit_index < len(payload_bits):
-                r = (r & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
-            if bit_index < len(payload_bits):
-                g = (g & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
-            if bit_index < len(payload_bits):
-                b = (b & 0xFE) | int(payload_bits[bit_index]); bit_index += 1
-            
-            pixels[x, y] = (r, g, b)
-
-        output_path = f"{os.path.splitext(os.path.basename(image_path))[0]}_invite.png"
-        img.save(output_path, "PNG")
-        return output_path
-
-    def _embed_in_video(self, video_path: str, payload_bits: str) -> str:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened(): raise RuntimeError("Could not open video file.")
-        
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        
-        pixels_per_frame = width * height
-        bits_per_frame = pixels_per_frame * 3
-        required_frames = math.ceil(len(payload_bits) / bits_per_frame)
-        
-        seed = self._get_seed(video_path)
-        frame_indices_to_modify = self._get_frame_sequence(seed, total_frames, required_frames)
-        
-        output_path = f"{os.path.splitext(os.path.basename(video_path))[0]}_invite.mp4"
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-
-        frame_num = 0
-        bits_embedded = 0
-        
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret: break
-
-            if frame_num in frame_indices_to_modify:
-                bits_for_this_frame = payload_bits[bits_embedded : bits_embedded + bits_per_frame]
-                
-                required_pixels = math.ceil(len(bits_for_this_frame) / 3)
-                pixel_sequence = self._get_pixel_sequence(seed + frame_num.to_bytes(4,'big'), width, height, required_pixels)
-                
-                bit_index = 0
-                for x, y in pixel_sequence:
-                    if bit_index >= len(bits_for_this_frame): break
-                    
-                    b, g, r = frame[y, x]
-                    if bit_index < len(bits_for_this_frame):
-                        b = (b & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
-                    if bit_index < len(bits_for_this_frame):
-                        g = (g & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
-                    if bit_index < len(bits_for_this_frame):
-                        r = (r & 0xFE) | int(bits_for_this_frame[bit_index]); bit_index += 1
-                    frame[y, x] = [b, g, r]
-                
-                bits_embedded += len(bits_for_this_frame)
-
-            out.write(frame)
-            frame_num += 1
-            
-        cap.release()
-        out.release()
-        return output_path
-
-    def embed(self, carrier_path: str, data: dict) -> str:
-        try:
-            data_json = json.dumps(data).encode('utf-8')
-            key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
-            aesgcm = AESGCM(key)
-            nonce = os.urandom(12)
-            encrypted_data = nonce + aesgcm.encrypt(nonce, data_json, None)
-
-            payload = len(encrypted_data).to_bytes(4, 'big') + encrypted_data
-            payload_bits = ''.join(format(byte, '08b') for byte in payload)
-            
-            _, ext = os.path.splitext(carrier_path.lower())
-            if ext in ['.png', '.jpg', '.jpeg', '.bmp']:
-                return self._embed_in_image(carrier_path, payload_bits)
-            elif ext in ['.mp4', '.mov', '.avi']:
-                return self._embed_in_video(carrier_path, payload_bits)
-            else:
-                raise ValueError("Unsupported file type for steganography. Use an image or video.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to embed data: {e}")
-
-    def _extract_from_image(self, image_path: str) -> dict:
-        img = Image.open(image_path).convert('RGB')
-        width, height = img.size
-        pixels = img.load()
-        seed = self._get_seed(image_path)
-        
-        header_bits = ""
-        header_pixels = math.ceil(32 / 3)
-        pixel_sequence_header = self._get_pixel_sequence(seed, width, height, header_pixels)
-        for x, y in pixel_sequence_header:
-            r, g, b = pixels[x, y]
-            header_bits += str(r & 1) + str(g & 1) + str(b & 1)
-            if len(header_bits) >= 32: break
-        
-        data_len_bytes = int(header_bits[:32], 2)
-        
-        total_bits_to_extract = 32 + (data_len_bytes * 8)
-        required_pixels = math.ceil(total_bits_to_extract / 3)
-        pixel_sequence_full = self._get_pixel_sequence(seed, width, height, required_pixels)
-        
-        extracted_bits = ""
-        for x, y in pixel_sequence_full:
-            r, g, b = pixels[x, y]
-            extracted_bits += str(r & 1) + str(g & 1) + str(b & 1)
-
-        payload_bits = extracted_bits[:total_bits_to_extract]
-        payload_bytes_list = [payload_bits[i:i+8] for i in range(32, len(payload_bits), 8)]
-        encrypted_data = bytes([int(b, 2) for b in payload_bytes_list])
-        
-        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
-        aesgcm = AESGCM(key)
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
-        decrypted_json = aesgcm.decrypt(nonce, ciphertext, None)
-        return json.loads(decrypted_json)
-
-    def _extract_from_video(self, video_path: str) -> dict:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened(): raise RuntimeError("Could not open video file.")
-
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        seed = self._get_seed(video_path)
-
-        header_bits = ""
-        pixels_per_frame = width * height
-        bits_per_frame = pixels_per_frame * 3
-        
-        header_frames_count = math.ceil( (32/3) / pixels_per_frame ) + 1
-        frame_indices_header = self._get_frame_sequence(seed, total_frames, header_frames_count)
-        
-        for frame_index in frame_indices_header:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            ret, frame = cap.read()
-            if not ret: continue
-
-            pixel_sequence = self._get_pixel_sequence(seed + frame_index.to_bytes(4,'big'), width, height, pixels_per_frame)
-            for x,y in pixel_sequence:
-                if len(header_bits) >= 32: break
-                b, g, r = frame[y, x]
-                header_bits += str(b & 1) + str(g & 1) + str(r & 1)
-            if len(header_bits) >= 32: break
-
-        data_len_bytes = int(header_bits[:32], 2)
-        total_bits_to_extract = 32 + (data_len_bytes * 8)
-        required_frames = math.ceil(total_bits_to_extract / bits_per_frame)
-        frame_indices_full = self._get_frame_sequence(seed, total_frames, required_frames)
-        
-        extracted_bits = ""
-        for frame_index in frame_indices_full:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            ret, frame = cap.read()
-            if not ret: continue
-            
-            pixel_sequence = self._get_pixel_sequence(seed + frame_index.to_bytes(4,'big'), width, height, pixels_per_frame)
-            for x, y in pixel_sequence:
-                if len(extracted_bits) >= total_bits_to_extract: break
-                b, g, r = frame[y, x]
-                extracted_bits += str(b & 1) + str(g & 1) + str(r & 1)
-            if len(extracted_bits) >= total_bits_to_extract: break
-        
-        cap.release()
-
-        payload_bits = extracted_bits[:total_bits_to_extract]
-        payload_bytes_list = [payload_bits[i:i+8] for i in range(32, len(payload_bits), 8)]
-        encrypted_data = bytes([int(b, 2) for b in payload_bytes_list])
-
-        key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b'steg-aes-key').derive(self.shared_secret)
-        aesgcm = AESGCM(key)
-        nonce = encrypted_data[:12]
-        ciphertext = encrypted_data[12:]
-        decrypted_json = aesgcm.decrypt(nonce, ciphertext, None)
-        return json.loads(decrypted_json)
-        
-    def extract(self, carrier_path: str) -> dict:
-        try:
-            _, ext = os.path.splitext(carrier_path.lower())
-            if ext in ['.png', '.jpg', '.jpeg', '.bmp']:
-                return self._extract_from_image(carrier_path)
-            elif ext in ['.mp4', '.mov', '.avi']:
-                return self._extract_from_video(carrier_path)
-            else:
-                raise ValueError("Unsupported file type for steganography. Use an image or video.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to extract data. Is the secret phrase correct? Error: {e}")
-
-class QuantumSentryCryptography:
-    def encrypt(self, plaintext_or_bytes, key):
-        if not key: raise ValueError("Key cannot be empty.")
-        data_bytes = plaintext_or_bytes.encode('utf-8') if isinstance(plaintext_or_bytes, str) else plaintext_or_bytes
-        if len(key) < len(data_bytes): raise ValueError("Key is shorter than data. Cannot use OTP.")
-        encrypted_payload = bytes([p ^ k for p, k in zip(data_bytes, key)])
-        return base64.b64encode(encrypted_payload).decode('utf-8')
-    def decrypt(self, b64_ciphertext, key, is_text=True):
-        if not key: raise ValueError("Key cannot be empty.")
-        ciphertext = base64.b64decode(b64_ciphertext.encode('utf-8'))
-        if len(key) < len(ciphertext): raise ValueError("Key is shorter than ciphertext. Cannot decrypt.")
-        decrypted_bytes = bytes([c ^ k for c, k in zip(ciphertext, key)])
-        if is_text:
-            return decrypted_bytes.decode('utf-8', errors='ignore')
-        return decrypted_bytes
-
-class KeyStreamGenerator:
-    def __init__(self, shared_secret, machine_fingerprint):
-        info_str = b'aetherium-qcom-key-stream' + machine_fingerprint.encode('utf-8')
-        self.hkdf = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info_str, backend=default_backend())
-        self.seed = self.hkdf.derive(shared_secret)
-        self.counter = 0
-    def get_bytes(self, num_bytes):
-        key_material = b''
-        while len(key_material) < num_bytes:
-            block = hashlib.sha256(self.seed + self.counter.to_bytes(4, 'big')).digest()
-            key_material += block
-            self.counter += 1
-        return key_material[:num_bytes]
-
-class SecurityTier(Enum):
-    NORMAL = 0
-    INTEGRITY_PROOF_FAILED = 1
-    SUSPICIOUS_TIMING = 2
-    UNUSUAL_PAYLOAD = 3
-    VM_DETECTED = 4
-
-class SecurityMonitor:
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.last_timestamp = None
-        self.is_calibrated = False
-        self.trust_score = 100
-        self.timing_model = GaussianMixture(n_components=2, random_state=42)
-        self.payload_model = IsolationForest(contamination=0.05, random_state=42)
-
-    def _extract_features(self, message_dict):
-        current_time = time.time()
-        inter_arrival_time = current_time - self.last_timestamp if self.last_timestamp else 0
-        self.last_timestamp = current_time
-        timing_features = [inter_arrival_time]
-        
-        message_size = len(message_dict.get('data', ''))
-        payload_complexity = len(message_dict.keys())
-        payload_features = [inter_arrival_time, message_size, payload_complexity]
-
-        return timing_features, payload_features
-
-    def calibrate(self, calibration_packets):
-        self.log("Performing security calibration with peer...")
-        timing_feature_buffer = [self._extract_features(p)[0] for p in calibration_packets]
-        payload_feature_buffer = [self._extract_features(p)[1] for p in calibration_packets]
-        
-        self.timing_model.fit(np.array(timing_feature_buffer))
-        self.payload_model.fit(np.array(payload_feature_buffer))
-        
-        self.is_calibrated = True
-        self.log("✅ Security models are calibrated and active.")
-
-    def analyze_packet(self, message_dict, is_peer_on_vm):
-        if not self.is_calibrated: return SecurityTier.NORMAL
-
-        if is_peer_on_vm: self.trust_score -= 1
-
-        timing_features, payload_features = self._extract_features(message_dict)
-
-        timing_score = self.timing_model.score_samples(np.array([timing_features]))[0]
-        if timing_score < -5:
-            self.log(f"SECURITY ALERT: Atypical message timing detected (possible bot). Score: {timing_score:.3f}")
-            self.trust_score -= 25
-            return SecurityTier.SUSPICIOUS_TIMING
-
-        payload_prediction = self.payload_model.predict(np.array([payload_features]))
-        if payload_prediction[0] == -1:
-            self.log(f"SECURITY ALERT: Anomalous message payload detected.")
-            self.trust_score -= 15
-            return SecurityTier.UNUSUAL_PAYLOAD
-            
-        return SecurityTier.NORMAL
-
-class BlockManager:
-    def __init__(self, log_callback):
-        self.log = log_callback
-        self.blocked_machines = set()
-        self.load_blocked_users()
-    def load_blocked_users(self):
-        if os.path.exists(Config.BLOCKED_MACHINES_FILE):
-            try:
-                with open(Config.BLOCKED_MACHINES_FILE, 'r') as f: self.blocked_machines = set(json.load(f))
-                self.log(f"Loaded {len(self.blocked_machines)} blocked machines.")
-            except (json.JSONDecodeError, KeyError):
-                self.log("Error loading blocked machines file.")
-        else: self.log("No blocked machines file found.")
-    def save_blocked_users(self):
-        with open(Config.BLOCKED_MACHINES_FILE, 'w') as f: json.dump(list(self.blocked_machines), f)
-        self.log("Blocked machines list saved.")
-    def block_user(self, machine_fingerprint):
-        self.blocked_machines.add(machine_fingerprint)
-        self.save_blocked_users()
-        return "User has been blocked."
-    def is_blocked(self, machine_fingerprint):
-        return machine_fingerprint in self.blocked_machines
-
-class Node:
-    def __init__(self, config, identity_manager, contact_manager, digital_signature_manager, block_manager, machine_fingerprint_manager, log_queue, event_queue, source_hash):
-        self.config = config
-        self.identity = identity_manager
-        self.contacts = contact_manager
-        self.digital_signature_manager = digital_signature_manager
-        self.block_manager = block_manager
-        self.machine_fingerprint_manager = machine_fingerprint_manager
-        self.log_queue = log_queue
-        self.event_queue = event_queue
-        self.stop_event = threading.Event()
-        self.sessions = {}
-        self.server_socket = None
-        self.source_code_hash = source_hash
-        self.recent_nonces = {}
-        self.nonce_lock = threading.Lock()
-        self.listening_port = None
-        self.packet_obfuscator = PacketObfuscator()
-
-    def log(self, message): self.log_queue.put(f"[Node] {message}")
+def handle_gui(args):
+    app = QApplication(sys.argv)
     
-    def get_my_public_key_pem(self):
-        return self.digital_signature_manager.public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo).decode('utf-8')
+    qss_style = """
+        QMainWindow, QWidget { background-color: #263238; }
+        QLabel { color: #CFD8DC; font-size: 14px; }
+        QLabel#TitleLabel { color: white; font-size: 20px; font-weight: bold; }
+        QPushButton { background-color: #00796B; color: white; border: none; padding: 8px 16px; border-radius: 4px; font-size: 14px; }
+        QPushButton:hover { background-color: #00897B; }
+        QPushButton:disabled { background-color: #455A64; }
+        QPushButton#SendButton { background-color: #4CAF50; }
+        QPushButton#SendButton:hover { background-color: #66BB6A; }
+        QPushButton#SidebarButton { background-color: transparent; text-align: left; padding: 10px; font-size: 16px; border-radius: 0px; }
+        QPushButton#SidebarButton:hover { background-color: #37474F; }
+        QLineEdit, QTextEdit, QListWidget { background-color: #37474F; color: #CFD8DC; border: 1px solid #263238; border-radius: 4px; padding: 5px; font-size: 14px; }
+        QStatusBar { color: #CFD8DC; }
+        QScrollBar:vertical { border: none; background: #37474F; width: 10px; margin: 0px 0px 0px 0px; }
+        QScrollBar::handle:vertical { background: #546E7A; min-height: 20px; border-radius: 5px; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        QWidget#Sidebar { background-color: #212121; }
+    """
+    app.setStyleSheet(qss_style)
 
-    def send_payload(self, sock, data_dict):
-        try:
-            json_bytes = json.dumps(data_dict).encode('utf-8')
-            obfuscated_packet = self.packet_obfuscator.wrap(json_bytes)
-            sock.sendall(obfuscated_packet)
-            return True
-        except (ConnectionResetError, BrokenPipeError, OSError) as e:
-            self.log(f"Send failed: {e}"); return False
-
-    def recv_payload(self, sock):
-        json_bytes = self.packet_obfuscator.unwrap(sock)
-        if json_bytes is None: return None
-        try:
-            return json.loads(json_bytes.decode('utf-8'))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return None
-
-    def start(self):
-        self.log(f"Node starting for user '{self.identity.username}'...")
-        for port in self.config.UNSUSPICIOUS_PORTS:
-            try:
-                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                self.server_socket.bind(('', port))
-                self.listening_port = port
-                self.log(f"Successfully bound to unsuspicious port {self.listening_port}")
-                break
-            except OSError:
-                self.log(f"Port {port} is already in use. Trying next...")
-                self.server_socket.close()
-                self.server_socket = None
-        
-        if not self.listening_port:
-            self.log("FATAL: Could not bind to any unsuspicious ports. Cannot receive connections.")
-            self.event_queue.put({'type': 'error', 'data': "Could not open a port to listen for connections."})
-            return
-        threading.Thread(target=self._listen_for_connections, daemon=True).start()
-        threading.Thread(target=self._cleanup_nonces, daemon=True).start()
-
-    def stop(self):
-        self.stop_event.set()
-        if self.server_socket: self.server_socket.close()
-        for session in self.sessions.values(): session['conn'].close()
-        self.log("Node stopped.")
-
-    def _perform_security_calibration(self, conn, peer_username, is_initiator):
-        session = self.sessions[peer_username]
-        calibration_packets_to_send = []
-        received_calibration_packets = []
-        
-        for i in range(30):
-            packet = {'type': 'calibration', 'seq': i, 'data': os.urandom(random.randint(16, 128)).hex()}
-            calibration_packets_to_send.append(packet)
-
-        conn.settimeout(5.0)
-        try:
-            for packet in calibration_packets_to_send:
-                self.send_payload(conn, packet)
-                if not is_initiator:
-                    received = self.recv_payload(conn)
-                    if received and received.get('type') == 'calibration':
-                        received_calibration_packets.append(received)
-                time.sleep(random.uniform(0.01, 0.05))
-            
-            if is_initiator:
-                 for _ in range(30):
-                    received = self.recv_payload(conn)
-                    if received and received.get('type') == 'calibration':
-                        received_calibration_packets.append(received)
-
-        except socket.timeout:
-            self.log("Calibration failed: Peer communication timed out.")
-            return False
-        finally:
-            conn.settimeout(None)
-
-        if len(received_calibration_packets) < 30:
-             self.log("Calibration failed: Did not receive all packets from peer.")
-             return False
-
-        session['security_monitor'].calibrate(received_calibration_packets)
-        return True
-
-    def _generate_dip_challenge(self):
-        nonce = os.urandom(16).hex()
-        start = random.randint(0, len(SOURCE_CODE_BYTES) - 1024)
-        end = start + 1024
-        return {'nonce': nonce, 'start': start, 'end': end}
-
-    def _solve_dip_challenge(self, challenge, peer_public_id):
-        nonce = challenge['nonce']
-        start = challenge['start']
-        end = challenge['end']
-        code_slice = SOURCE_CODE_BYTES[start:end]
-        
-        hasher = hashlib.sha256()
-        hasher.update(nonce.encode())
-        hasher.update(peer_public_id.encode())
-        hasher.update(code_slice)
-        return hasher.hexdigest()
-
-    def initiate_direct_session(self, peer_ip, peer_port, peer_public_id, peer_public_key_pem):
-        peer_username = self.identity.generate_username_from_id(peer_public_id)
-        self.log(f"Attempting direct connection to {peer_username} at {peer_ip}:{peer_port}...")
-        try:
-            msg, success = self.contacts.add_contact(peer_public_id, peer_public_key_pem)
-            self.log(msg)
-            conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            conn.connect((peer_ip, peer_port))
-            
-            self.send_payload(conn, {'type': 'hello'})
-            challenge_response = self.recv_payload(conn)
-            if not challenge_response or 'challenge' not in challenge_response:
-                raise Exception("Did not receive a valid challenge from the host.")
-            
-            dh_private_key = Config.DH_PARAMETERS.generate_private_key()
-            dh_public_key_bytes = dh_private_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-            
-            response_payload = {
-                'public_id': self.identity.public_id, 
-                'machine_fingerprint': self.machine_fingerprint_manager.fingerprint,
-                'is_vm': self.machine_fingerprint_manager.is_vm,
-                'dh_public_key': dh_public_key_bytes.decode('utf-8'),
-                'timestamp': time.time(),
-                'nonce': os.urandom(16).hex(),
-                'challenge_solution': self._solve_dip_challenge(challenge_response['challenge'], peer_public_id),
-                'public_key': self.get_my_public_key_pem()
-            }
-            response_payload_json = json.dumps(response_payload, sort_keys=True)
-            signature = self.digital_signature_manager.sign(response_payload_json)
-            self.send_payload(conn, {'type': 'challenge_response', 'payload': response_payload, 'signature': signature})
-            self.log(f"Sent challenge response to {peer_username}.")
-
-            peer_final_response = self.recv_payload(conn)
-            if not peer_final_response: raise Exception("No final response from peer.")
-            peer_payload = peer_final_response.get('payload')
-            peer_signature = peer_final_response.get('signature')
-            if not DigitalSignatureManager.verify(peer_public_key_pem, json.dumps(peer_payload, sort_keys=True), peer_signature):
-                raise Exception("Peer's final response signature is invalid! Possible MitM attack.")
-            
-            if peer_payload.get('status') == 'accepted':
-                final_ack_payload = {'dip_solution': self._solve_dip_challenge(peer_payload['dip_challenge'], peer_public_id)}
-                self.send_payload(conn, final_ack_payload)
-
-                peer_dh_public_key_pem = peer_payload.get('dh_public_key')
-                peer_dh_public_key = serialization.load_pem_public_key(peer_dh_public_key_pem.encode('utf-8'), backend=default_backend())
-                shared_key = dh_private_key.exchange(peer_dh_public_key)
-                self.log(f"Handshake complete. Establishing secure session with '{peer_username}'...")
-                
-                self.sessions[peer_username] = {
-                    'conn': conn, 'crypto': QuantumSentryCryptography(), 
-                    'key_stream': KeyStreamGenerator(shared_key, self.machine_fingerprint_manager.fingerprint),
-                    'security_monitor': SecurityMonitor(self.log), 
-                    'public_id': peer_public_id, 'public_key': peer_public_key_pem,
-                    'is_vm': peer_payload.get('is_peer_on_vm')
-                }
-                
-                if not self._perform_security_calibration(conn, peer_username, is_initiator=True):
-                    raise Exception("Security calibration failed. Aborting connection.")
-
-                self.log(f"✅ Secure session established with '{peer_username}'!")
-                self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'success'})
-                threading.Thread(target=self._listen_for_messages, args=(conn, peer_username), daemon=True).start()
-            else:
-                raise Exception(f"Connection rejected by '{peer_username}': {peer_payload.get('reason')}")
-        except Exception as e:
-            self.log(f"Failed to connect to {peer_ip}: {e}")
-            self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'failed', 'reason': str(e)})
-
-    def _listen_for_connections(self):
-        self.server_socket.listen(10)
-        self.log(f"Listening for connections on port {self.listening_port}")
-        while not self.stop_event.is_set():
-            try:
-                conn, addr = self.server_socket.accept()
-                self.log(f"Incoming connection from {addr}")
-                threading.Thread(target=self.handle_incoming_connection, args=(conn, addr), daemon=True).start()
-            except OSError:
-                if not self.stop_event.is_set(): self.log("Server socket error.")
-                break
-        self.log("Listener loop stopped.")
-
-    def _cleanup_nonces(self):
-        while not self.stop_event.is_set():
-            with self.nonce_lock:
-                cutoff = time.time() - 60
-                old_nonces = [k for k, v in self.recent_nonces.items() if v < cutoff]
-                for k in old_nonces: del self.recent_nonces[k]
-            time.sleep(30)
-
-    def handle_incoming_connection(self, conn, addr):
-        initial_request = self.recv_payload(conn)
-        if not initial_request or initial_request.get('type') != 'hello':
-            self.log(f"Invalid initial request from {addr}. Closing."); conn.close(); return
-        
-        dip_challenge = self._generate_dip_challenge()
-        self.send_payload(conn, {'challenge': dip_challenge})
-        
-        response_wrapper = self.recv_payload(conn)
-        if not response_wrapper or response_wrapper.get('type') != 'challenge_response':
-            self.log(f"Invalid challenge response from {addr}. Closing."); conn.close(); return
-        
-        req_payload = response_wrapper.get('payload')
-        req_signature = response_wrapper.get('signature')
-        peer_public_id = req_payload.get('public_id')
-        
-        expected_solution = self._solve_dip_challenge(dip_challenge, peer_public_id)
-        if req_payload.get('challenge_solution') != expected_solution:
-            self._send_rejection(conn, "Integrity proof failed. Client may be modified."); return
-
-        self.log("Peer has passed Dynamic Integrity Proof.")
-        self._handle_session_responder(conn, req_payload, req_signature)
+    display_name = None
+    bootstrap_node = None
+    profile_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "profile.json")
+    if not os.path.exists(profile_path):
+        name, ok = QInputDialog.getText(None, "Welcome to Aetherium Q-Com", "Enter your desired display name:")
+        if not (ok and name.strip()): 
+            sys.exit(0)
+        display_name = name.strip()
     
-    def _handle_session_responder(self, conn, request, signature):
-        peer_public_key_pem = request.get('public_key')
-        if not DigitalSignatureManager.verify(peer_public_key_pem, json.dumps(request, sort_keys=True), signature):
-            self._send_rejection(conn, "Invalid digital signature."); return
-        
-        peer_public_id = request.get('public_id')
-        peer_machine_fingerprint = request.get('machine_fingerprint')
-        if self.block_manager.is_blocked(peer_machine_fingerprint):
-            self._send_rejection(conn, "User is blocked."); return
-        
-        msg, success = self.contacts.add_contact(peer_public_id, peer_public_key_pem)
-        self.log(msg)
-        known_username = self.contacts.get_username_by_id(peer_public_id)
-        
-        try:
-            dh_private_key = Config.DH_PARAMETERS.generate_private_key()
-            dh_public_key_bytes = dh_private_key.public_key().public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo)
-            
-            response_payload = {
-                'status': 'accepted', 
-                'dh_public_key': dh_public_key_bytes.decode('utf-8'),
-                'is_peer_on_vm': request.get('is_vm'),
-                'dip_challenge': self._generate_dip_challenge()
-            }
-            response_json = json.dumps(response_payload, sort_keys=True)
-            response_signature = self.digital_signature_manager.sign(response_json)
-            self.send_payload(conn, {'payload': response_payload, 'signature': response_signature})
-
-            final_ack = self.recv_payload(conn)
-            expected_solution = self._solve_dip_challenge(response_payload['dip_challenge'], self.identity.public_id)
-            if not final_ack or final_ack.get('dip_solution') != expected_solution:
-                 raise Exception("Peer failed final integrity proof.")
-
-            self.log("Mutual integrity proof successful.")
-            peer_dh_public_key_pem = request.get('dh_public_key')
-            peer_dh_public_key = serialization.load_pem_public_key(peer_dh_public_key_pem.encode('utf-8'), backend=default_backend())
-            shared_key = dh_private_key.exchange(peer_dh_public_key)
-
-            self.sessions[known_username] = {
-                'conn': conn, 'crypto': QuantumSentryCryptography(), 
-                'key_stream': KeyStreamGenerator(shared_key, self.machine_fingerprint_manager.fingerprint),
-                'security_monitor': SecurityMonitor(self.log), 
-                'public_id': peer_public_id, 'public_key': peer_public_key_pem,
-                'is_vm': request.get('is_vm')
-            }
-            
-            if not self._perform_security_calibration(conn, known_username, is_initiator=False):
-                raise Exception("Security calibration failed.")
-
-            self.log(f"✅ Secure session established with '{known_username}'.")
-            self.event_queue.put({'type': 'p2p_status', 'peer_username': known_username, 'status': 'success'})
-            threading.Thread(target=self._listen_for_messages, args=(conn, known_username), daemon=True).start()
-        except Exception as e:
-            self.log(f"Error during session handshake with '{known_username}': {e}")
-            self._send_rejection(conn, f"Handshake error: {e}")
-
-    def _send_rejection(self, conn, reason):
-        payload = {'status': 'rejected', 'reason': reason}
-        payload_json = json.dumps(payload, sort_keys=True)
-        signature = self.digital_signature_manager.sign(payload_json)
-        self.send_payload(conn, {'payload': payload, 'signature': signature})
-        conn.close()
-
-    def _listen_for_messages(self, conn, peer_username):
-        session = self.sessions.get(peer_username)
-        if not session: return
-        while not self.stop_event.is_set():
-            message = self.recv_payload(conn)
-            if message is None:
-                self.log(f"Connection with '{peer_username}' lost.")
-                self.event_queue.put({'type': 'p2p_status', 'peer_username': peer_username, 'status': 'disconnected'})
-                if peer_username in self.sessions: del self.sessions[peer_username]
-                break
-            
-            if message.get('type') == 'calibration': continue
-
-            monitor = session['security_monitor']
-            monitor.analyze_packet(message, session['is_vm'])
-            
-            if monitor.trust_score < 50:
-                self.log(f"CRITICAL: Trust score for {peer_username} fell to {monitor.trust_score}. Terminating connection.")
-                conn.close()
-                break
-
-            payload_data = message.get('data', '')
-            signature_b64 = message.get('signature', '')
-            peer_public_key = session.get('public_key')
-            if not peer_public_key or not DigitalSignatureManager.verify(peer_public_key, payload_data, signature_b64):
-                self.log(f"SECURITY ALERT: Invalid signature from '{peer_username}'. Message ignored."); continue
-            event = message
-            event['from'] = peer_username
-            self.event_queue.put(event)
+    dht_port, comm_port = get_free_ports(2)
     
-    def send_p2p_message(self, peer_username, text_message):
-        if peer_username in self.sessions:
-            session = self.sessions[peer_username]
-            key_bytes = session['key_stream'].get_bytes(len(text_message))
-            encrypted_msg = session['crypto'].encrypt(text_message, key_bytes)
-            signature = self.digital_signature_manager.sign(encrypted_msg)
-            self.send_payload(session['conn'], {'type': 'p2p_chat', 'data': encrypted_msg, 'length': len(text_message), 'signature': signature})
+    window = ChatWindow(display_name=display_name, dht_port=dht_port, comm_port=comm_port, bootstrap_node=bootstrap_node)
+    window.show()
+    sys.exit(app.exec())
 
-    def send_file(self, peer_username, file_path):
-        if peer_username not in self.sessions: return
-        session = self.sessions[peer_username]
-        file_name = os.path.basename(file_path)
-        try:
-            with open(file_path, "rb") as f: file_bytes = f.read()
-            file_len = len(file_bytes)
-            key_bytes = session['key_stream'].get_bytes(file_len)
-            encrypted_bytes = session['crypto'].encrypt(file_bytes, key_bytes)
-            signature = self.digital_signature_manager.sign(encrypted_bytes)
-            self.send_payload(session['conn'], {'type': 'file_transfer', 'filename': file_name, 'data': encrypted_bytes, 'length': file_len, 'signature': signature})
-            self.log(f"Successfully sent file '{file_name}' to '{peer_username}'.")
-            self.event_queue.put({'type': 'file_sent', 'to': peer_username, 'filename': file_name})
-        except Exception as e:
-            self.log(f"Failed to send file '{file_name}': {e}")
+def handle_keygen(args=None):
+    pk, sk = CryptoManager.generate_ephemeral_keys()
+    with cwd():
+        with open("./dev_public.key", "w") as f: f.write(pk)
+        with open("../dev_private.key", "w") as f: f.write(sk)
+    print("--- GENERATED DEV MASTER KEYS ---\n")
+    print("dev_public.key and dev_private.key files created.")
+    print("KEEP dev_private.key ABSOLUTELY SECRET.")
 
-    def send_group_message(self, group_name, text_message, group_members):
-        for member_username in group_members:
-            if member_username != self.identity.username and member_username in self.sessions:
-                session = self.sessions[member_username]
-                key_bytes = session['key_stream'].get_bytes(len(text_message))
-                encrypted_msg = session['crypto'].encrypt(text_message, key_bytes)
-                signature = self.digital_signature_manager.sign(encrypted_msg)
-                self.send_payload(session['conn'], {'type': 'group_chat', 'data': encrypted_msg, 'length': len(text_message), 'group_name': group_name, 'signature': signature})
+def handle_sign(args=None):
+    with cwd():
+        if not os.path.exists("../dev_private.key"):
+            print("FATAL: dev_private.key not found. Run 'keygen' first.")
+            sys.exit(1)
+    dev_private_key = None
+    with cwd():
+        with open("../dev_private.key", "r") as f: dev_private_key = f.read()
+    code_hash = CodeHasher.get_source_hash()
+    if not code_hash:
+        print("Could not generate code hash for signing.")
+        sys.exit(1)
+    signature = CryptoManager.sign_hash(dev_private_key, code_hash)
+    if not signature:
+        print("Could not sign code hash.")
+        sys.exit(1)
+    with cwd():
+        with open("./code_signature.sig", "w") as f: f.write(signature)
+    print(f"--- CODE SIGNED SUCCESSFULLY ---\n")
+    print(f"Code Hash: {code_hash}")
+    print(f"Signature written to code_signature.sig")
 
-class AppState:
-    def __init__(self):
-        self.app_config = Config()
-        self.log_queue = queue.Queue()
-        self.event_queue = queue.Queue()
-        self.system_log = ""
-        self.machine_fingerprint_manager = MachineFingerprintManager(self.log)
-        self.digital_signature_manager = DigitalSignatureManager(self.log)
-        self.identity_manager = IdentityManager(self.log, self.machine_fingerprint_manager.fingerprint)
-        self.contact_manager = ContactManager(self.log, self.identity_manager)
-        self.group_manager = GroupChatManager(self.log)
-        self.block_manager = BlockManager(self.log)
-        self.node = Node(self.app_config, self.identity_manager, self.contact_manager, self.digital_signature_manager, self.block_manager, self.machine_fingerprint_manager, self.log_queue, self.event_queue, SOURCE_HASH)
-        self.p2p_chats = {}
-        self.group_chats = {}
-    def log(self, message):
-        self.system_log += f"{time.strftime('%H:%M:%S')} - {message}\n"
-    def add_p2p_chat(self, peer_username, message):
-        chat_id = f"p2p:{peer_username}"
-        if chat_id not in self.p2p_chats:
-            self.p2p_chats[chat_id] = {'history': "", 'status': 'connecting'}
-        self.p2p_chats[chat_id]['history'] += message + "\n"
-    def add_group_chat(self, group_name, message):
-        chat_id = f"group:{group_name}"
-        if chat_id not in self.group_chats:
-            self.group_chats[chat_id] = {'history': ""}
-        self.group_chats[chat_id]['history'] += message + "\n"
+def handle_invite(args):
+    profile = load_cli_profile()
+    if not profile:
+        return
 
-app_state = AppState()
+    stego = SteganographyManager()
+    crypto = CryptoManager()
 
-def update_ui_loop(current_chat_id, previous_p2p_histories, previous_group_histories):
-    new_connection_status = ""
-    while not app_state.log_queue.empty(): app_state.log(app_state.log_queue.get_nowait())
-    while not app_state.event_queue.empty():
-        event = app_state.event_queue.get_nowait()
-        event_type = event.get('type')
-        peer_username = event.get('from', event.get('peer_username'))
-        if event_type == 'update_status':
-            new_connection_status = event['data']
-            app_state.log(f"UI Status: {new_connection_status}")
-        elif event_type == 'p2p_status':
-            chat_id = f"p2p:{peer_username}"
-            if event['status'] == 'success':
-                new_connection_status = f"✅ Securely connected to '{peer_username}'."
-                app_state.p2p_chats[chat_id] = {'history': f"[System] {new_connection_status}\n", 'status': 'connected'}
-            else:
-                reason = event.get('reason', 'Connection lost.')
-                new_connection_status = f"❌ Connection to '{peer_username}' failed. Reason: {reason}"
-                status_msg = f"[System] {new_connection_status}\n"
-                if chat_id in app_state.p2p_chats:
-                    app_state.p2p_chats[chat_id]['history'] += status_msg
-                    app_state.p2p_chats[chat_id]['status'] = 'disconnected'
-                else:
-                    app_state.p2p_chats[chat_id] = {'history': status_msg, 'status': 'failed'}
-        elif event_type in ['p2p_chat', 'group_chat', 'file_transfer']:
-            session = app_state.node.sessions.get(peer_username)
-            if not session: continue
-            if event_type == 'p2p_chat':
-                key_bytes = session['key_stream'].get_bytes(event['length'])
-                decrypted_msg = session['crypto'].decrypt(event['data'], key_bytes)
-                app_state.add_p2p_chat(peer_username, f"{peer_username}: {decrypted_msg}")
-            elif event_type == 'group_chat':
-                key_bytes = session['key_stream'].get_bytes(event['length'])
-                decrypted_msg = session['crypto'].decrypt(event['data'], key_bytes)
-                app_state.add_group_chat(event['group_name'], f"[{event['group_name']}] {peer_username}: {decrypted_msg}")
-            elif event_type == 'file_transfer':
-                key_bytes = session['key_stream'].get_bytes(event['length'])
-                decrypted_bytes = session['crypto'].decrypt(event['data'], key_bytes, is_text=False)
-                save_path = f"received_{event['filename']}"
-                with open(save_path, "wb") as f: f.write(decrypted_bytes)
-                app_state.log(f"Received file '{event['filename']}' from '{peer_username}'. Saved to '{save_path}'.")
-                app_state.add_p2p_chat(peer_username, f"[System] Received file '{event['filename']}'.")
-
-    new_p2p_histories = {un: chat['history'] for un, chat in app_state.p2p_chats.items()}
-    new_group_histories = {un: chat['history'] for un, chat in app_state.group_chats.items()}
-    old_p2p_history = previous_p2p_histories.get(current_chat_id, "")
-    new_p2p_history = new_p2p_histories.get(current_chat_id, "")
-    old_group_history = previous_group_histories.get(current_chat_id, "")
-    new_group_history = new_group_histories.get(current_chat_id, "")
-    trigger_value = gr.update()
-    if old_p2p_history != new_p2p_history or old_group_history != new_group_history:
-        trigger_value = str(time.time())
-    p2p_chat_choices = sorted([f"p2p:{c}" for c in app_state.contact_manager.contacts.keys()])
-    group_chat_choices = sorted([f"group:{g}" for g in app_state.group_manager.groups.keys()])
-    all_chat_choices = p2p_chat_choices + group_chat_choices
-    connection_status_update = gr.update(value=new_connection_status) if new_connection_status else gr.update()
-    return (app_state.system_log, connection_status_update, new_p2p_histories, new_group_histories, gr.update(choices=all_chat_choices) if all_chat_choices else gr.update(), trigger_value)
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(('10.255.255.255', 1))
-        IP = s.getsockname()[0]
-    except Exception: IP = '127.0.0.1'
-    finally: s.close()
-    return IP
-
-def get_public_ip(log_callback):
-    ip_services = ["https://checkip.amazonaws.com", "https://api.ipify.org"]
-    for service in ip_services:
-        try:
-            log_callback(f"Fetching public IP address from {service}...")
-            with urllib.request.urlopen(service, timeout=5) as response:
-                # .strip() is important as some services might add newlines
-                public_ip = response.read().decode('utf-8').strip()
-                log_callback(f"Successfully found public IP: {public_ip}")
-                return public_ip
-        except Exception as e:
-            log_callback(f"WARNING: Failed to get public IP from {service}: {e}")
-    return None
-
-def create_invitation_ui(carrier_file, secret_phrase):
-    if carrier_file is None or not secret_phrase:
-        return None, "Please upload a carrier file and provide a secret phrase."
-    
-    try:
-        local_ip = get_local_ip()
-        public_ip = get_public_ip(app_state.log)
-
-        if not public_ip:
-            app_state.log("WARNING: Could not determine public IP. Invitation may only work on a local network.")
+    if args.invite_command == 'create':
+        print(f"Creating invitation from {profile['display_name']}...")
+        dht_port, _ = get_free_ports(1)
+        invitation_data = crypto.create_invitation(profile['user_id'], profile['keys'], [('127.0.0.1', dht_port)])
+        invitation_bytes = json.dumps(invitation_data, sort_keys=True).encode()
         
-        steg_manager = MediaSteganographyManager(secret_phrase)
-        data_to_hide = {
-            "public_ip": public_ip,
-            "local_ip": local_ip,
-            "port": app_state.node.listening_port,
-            "public_id": app_state.identity_manager.public_id,
-            "public_key": app_state.node.get_my_public_key_pem()
-        }
-        output_path = steg_manager.embed(carrier_file.name, data_to_hide)
-        app_state.log(f"Invitation created embedding Public IP ({public_ip}) and Local IP ({local_ip}).")
-        return output_path, f"Invitation file created: {os.path.basename(output_path)}. Send this to your contact."
-    except Exception as e:
-        app_state.log(f"ERROR creating invitation: {e}")
-        return None, f"Error: {e}"
-
-def use_invitation_ui(invitation_file, secret_phrase):
-    if invitation_file is None or not secret_phrase:
-        return "Please upload the invitation file and provide the secret phrase."
-    
-    try:
-        steg_manager = MediaSteganographyManager(secret_phrase)
-        extracted_data = steg_manager.extract(invitation_file.name)
-        
-        host_public_ip = extracted_data.get("public_ip")
-        host_local_ip = extracted_data.get("local_ip")
-        peer_port = extracted_data.get("port")
-        peer_public_id = extracted_data.get("public_id")
-        peer_public_key = extracted_data.get("public_key")
-
-        if not all([host_local_ip, peer_port, peer_public_id, peer_public_key]):
-            return "Invitation file is invalid or corrupted."
-
-        my_public_ip = get_public_ip(app_state.log)
-        
-        ip_to_use = host_public_ip
-        
-        if my_public_ip and host_public_ip and my_public_ip == host_public_ip:
-            app_state.log("Public IPs match. Assuming local network connection.")
-            ip_to_use = host_local_ip
-        elif not host_public_ip:
-             app_state.log("Host's public IP not available in invitation. Trying local IP.")
-             ip_to_use = host_local_ip
+        output_path, error = stego.embed(args.media, invitation_bytes, args.password)
+        if error:
+            print(f"Error creating invitation: {error}")
         else:
-            app_state.log("Public IPs do not match. Assuming remote network connection.")
-            ip_to_use = host_public_ip
+            print(f"Successfully created invitation: {output_path}")
 
-        if not ip_to_use:
-            return "Could not determine a valid IP address to connect to from the invitation."
+    elif args.invite_command == 'read':
+        print(f"Reading invitation from {args.media}...")
+        inv_bytes, error = stego.extract(args.media, args.password)
+        if error:
+            print(f"Error reading invitation: {error}")
+            return
+        
+        try:
+            invitation = json.loads(inv_bytes)
+            if not crypto.verify_invitation(invitation):
+                print("Security Alert: Invitation signature is invalid or tampered with.")
+                return
+            
+            issuer_info = invitation['payload']
+            print("\n--- Invitation Details ---")
+            print(f"Issuer ID: {issuer_info['issuer_id']}")
+            print(f"Issuer KEM PK: {issuer_info['issuer_kem_pk'][:32]}...")
+            print(f"Issuer Sign PK: {issuer_info['issuer_sign_pk'][:32]}...")
+            print("Signature: VERIFIED")
+            print("--------------------------")
 
-        threading.Thread(target=app_state.node.initiate_direct_session, args=(ip_to_use, peer_port, peer_public_id, peer_public_key)).start()
-        return f"Invitation decoded. Automatically attempting to connect to {ip_to_use}:{peer_port}..."
+        except Exception as e:
+            print(f"Could not parse invitation data. It may be corrupt. Error: {e}")
 
-    except Exception as e:
-        app_state.log(f"ERROR using invitation: {e}")
-        return f"Error: {e}"
-
-def send_message_ui(message, current_chat_id):
-    if not message or not current_chat_id: return ""
-    chat_type, chat_name = current_chat_id.split(':', 1)
-    if chat_type == 'p2p':
-        if app_state.p2p_chats.get(current_chat_id, {}).get('status') != 'connected':
-            app_state.log("Cannot send message: Not securely connected."); return ""
-        app_state.add_p2p_chat(chat_name, f"You: {message}")
-        app_state.node.send_p2p_message(chat_name, message)
-    elif chat_type == 'group':
-        group_members = app_state.group_manager.get_group_members(chat_name)
-        app_state.add_group_chat(chat_name, f"You: {message}")
-        app_state.node.send_group_message(chat_name, message, group_members)
-    return ""
-
-def send_file_ui(file, current_chat_id):
-    if not file or not current_chat_id: return
-    chat_type, chat_name = current_chat_id.split(':', 1)
-    if chat_type != 'p2p':
-        app_state.log("File transfer is only supported for P2P chats."); return
-    app_state.node.send_file(chat_name, file.name)
-
-def change_active_chat(chat_id, p2p_histories, group_histories):
-    if not chat_id or ':' not in chat_id: return "[System] Select a chat to view history."
-    chat_type, chat_name = chat_id.split(':', 1)
-    if chat_type == 'p2p': history = p2p_histories.get(chat_id, "")
-    elif chat_type == 'group': history = group_histories.get(chat_id, "")
-    else: history = ""
-    return history
-
-def create_group_ui(group_name, member_usernames_str):
-    members_list = [m.strip() for m in member_usernames_str.strip().split('\n') if m.strip()]
-    msg, success = app_state.group_manager.create_group(group_name, members_list)
-    if success:
-        new_chat_choices = [f"p2p:{c}" for c in app_state.contact_manager.contacts.keys()] + [f"group:{g}" for g in app_state.group_manager.groups.keys()]
-        return gr.update(value=msg), gr.update(choices=new_chat_choices)
-    return gr.update(value=msg), gr.update()
+def handle_interactive(args):
+    InteractiveShell().cmdloop()
 
 def main():
-    app_state.node.start()
-    with gr.Blocks(theme=gr.themes.Soft(), title="Aetherium Q-Com") as demo:
-        gr.Markdown("# Aetherium Q-Com")
-        p2p_chat_histories = gr.State({})
-        group_chat_histories = gr.State({})
-        chat_update_trigger = gr.Textbox(visible=False)
-        with gr.Tabs():
-            with gr.TabItem("Chat & Network"):
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.Markdown("### 1. Create or Use an Invitation")
-                        connection_status_output = gr.Textbox(label="Connection Status", interactive=False, lines=3)
-                        with gr.Tabs():
-                            with gr.TabItem("Create Invitation (Host)"):
-                                host_file_input = gr.File(label="Upload any Carrier File (Image or Video)")
-                                host_secret_input = gr.Textbox(label="Enter a Shared Secret Passphrase", type="password")
-                                create_invitation_btn = gr.Button("Create Invitation File")
-                                invitation_file_output = gr.File(label="Download Your Invitation File")
-                            with gr.TabItem("Use Invitation (Connect)"):
-                                connect_file_input = gr.File(label="Upload Invitation File")
-                                connect_secret_input = gr.Textbox(label="Enter the Shared Secret Passphrase", type="password")
-                                connect_btn = gr.Button("Connect using Invitation")
-                    with gr.Column(scale=2):
-                        gr.Markdown("### 2. Secure Chat")
-                        all_chat_choices = [f"p2p:{c}" for c in app_state.contact_manager.contacts.keys()] + [f"group:{g}" for g in app_state.group_manager.groups.keys()]
-                        chat_selector = gr.Dropdown(label="Active Chat", choices=all_chat_choices, interactive=True)
-                        chat_output = gr.Textbox(label="Chat History", lines=10, interactive=False, autoscroll=True)
-                        chat_input = gr.Textbox(show_label=False, placeholder="Type your secure message and press Enter...")
-                        with gr.Row():
-                            file_to_send = gr.File(label="Send a File (P2P only)")
-                            send_file_btn = gr.Button("Send File")
-            with gr.TabItem("Identity & Contacts"):
-                 with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("## Your Identity")
-                        gr.Textbox(label="Your Permanent Username", value=app_state.identity_manager.username, interactive=False)
-                        gr.Textbox(label="Your Public ID", value=app_state.identity_manager.public_id, interactive=False, lines=2)
-                        gr.Textbox(label="Your Digital Public Key", lines=5, interactive=False, value=app_state.node.get_my_public_key_pem)
-                    with gr.Column():
-                        gr.Markdown("## Your Contacts")
-                        contact_list_output = gr.Textbox(label="Contacts", value="\n".join(app_state.contact_manager.contacts.keys()), interactive=False, lines=10)
-            with gr.TabItem("Groups"):
-                gr.Markdown("## Create a Group")
-                with gr.Row():
-                    with gr.Column():
-                        group_name_input = gr.Textbox(label="Group Name")
-                        group_members_input = gr.Textbox(label="Members (add their usernames, one per line)", lines=5)
-                        create_group_btn = gr.Button("Create Group")
-                    with gr.Column():
-                        group_status_box = gr.Textbox(label="Group Status", interactive=False)
-            with gr.TabItem("System Log"):
-                log_output = gr.Textbox(label="Log", lines=20, interactive=False, autoscroll=True)
-        
-        create_invitation_btn.click(create_invitation_ui, [host_file_input, host_secret_input], [invitation_file_output, connection_status_output])
-        connect_btn.click(use_invitation_ui, [connect_file_input, connect_secret_input], [connection_status_output])
-        
-        chat_input.submit(send_message_ui, [chat_input, chat_selector], [chat_input])
-        send_file_btn.click(send_file_ui, [file_to_send, chat_selector], None)
-        chat_selector.change(change_active_chat, [chat_selector, p2p_chat_histories, group_chat_histories], [chat_output])
-        create_group_btn.click(create_group_ui, [group_name_input, group_members_input], [group_status_box, chat_selector])
-        
-        timer = gr.Timer(1, active=False)
-        timer.tick(
-            update_ui_loop,
-            inputs=[chat_selector, p2p_chat_histories, group_chat_histories],
-            outputs=[log_output, connection_status_output, p2p_chat_histories, group_chat_histories, chat_selector, chat_update_trigger]
-        )
-        chat_update_trigger.change(
-            change_active_chat,
-            inputs=[chat_selector, p2p_chat_histories, group_chat_histories],
-            outputs=[chat_output]
-        )
-        demo.load(lambda: gr.Timer(active=True), None, outputs=timer).then(
-            lambda: "[System] Select a peer or group to view history.", None, [chat_output]
-        )
-    demo.launch(inbrowser=True)
-    app_state.node.stop()
+    parser = argparse.ArgumentParser(description="A secure, decentralized communication platform.", formatter_class=argparse.RawTextHelpFormatter)
+    subparsers = parser.add_subparsers(dest='command', help='commands')
+
+    gui_parser = subparsers.add_parser('gui', help='Launch the graphical user interface (default).')
+    gui_parser.set_defaults(func=handle_gui)
+
+    keygen_parser = subparsers.add_parser('keygen', help='Generate new developer master keys.')
+    keygen_parser.set_defaults(func=handle_keygen)
+
+    sign_parser = subparsers.add_parser('sign', help='Sign the application source code.')
+    sign_parser.set_defaults(func=handle_sign)
+
+    interactive_parser = subparsers.add_parser('interactive', help='Launch an interactive command shell.')
+    interactive_parser.set_defaults(func=handle_interactive)
+    
+    invite_parser = subparsers.add_parser('invite', help='Manage invitations.')
+    invite_subparsers = invite_parser.add_subparsers(dest='invite_command', required=True)
+    
+    invite_create_parser = invite_subparsers.add_parser('create', help='Create and embed an invitation in a media file.')
+    invite_create_parser.add_argument('--media', required=True, help='Path to the source media file (image, audio, video).')
+    invite_create_parser.add_argument('--password', required=True, help='Password to encrypt the invitation.')
+    invite_create_parser.set_defaults(func=handle_invite)
+
+    invite_read_parser = invite_subparsers.add_parser('read', help='Read and verify an invitation from a media file.')
+    invite_read_parser.add_argument('--media', required=True, help='Path to the invitation media file.')
+    invite_read_parser.add_argument('--password', required=True, help='Password to decrypt the invitation.')
+    invite_read_parser.set_defaults(func=handle_invite)
+
+    args = parser.parse_args()
+
+    if args.command not in ['gui', None]:
+        if hasattr(args, 'func'):
+            args.func(args)
+        else:
+            parser.print_help()
+        sys.exit(0)
+
+    dev_public_key, code_signature = None, None
+    try:
+        with cwd():
+            with open("./dev_public.key", "r") as f: dev_public_key = f.read()
+            with open("./code_signature.sig", "r") as f: code_signature = f.read()
+    except FileNotFoundError:
+        print("FATAL: This client is not signed. dev_public.key or code_signature.sig not found.")
+        sys.exit(1)
+
+    current_hash = CodeHasher.get_source_hash()
+    if not current_hash or not CryptoManager.verify_hash_signature(dev_public_key, code_signature, current_hash):
+        print("FATAL: CODE TAMPERING DETECTED OR SIGNATURE IS FOR A DIFFERENT VERSION. TERMINATING.")
+        sys.exit(1)
+
+    if hasattr(args, 'func'):
+        args.func(args)
+    else:
+        handle_gui(None)
 
 if __name__ == "__main__":
     main()

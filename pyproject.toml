@@ -3,15 +3,15 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Aetherium_QCom"
-version = "1.0.0"
+name = "aetherium-qcom"
+version = "0.1.0"
 authors = [
   { name="Yaron Koresh", email="aharonkoresh1@gmail.com" },
 ]
 description = "Aetherium Q-Com is a decentralized, untraceable, and unblockable communication platform engineered for truly private, censorship-resistant messaging."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -19,7 +19,19 @@ classifiers = [
     "Topic :: Communications :: Chat",
     "Topic :: Security :: Cryptography",
 ]
-dependencies = []
+dependencies = [
+    "kademlia",
+    "cryptography",
+    "pqcrypto",
+    "numpy",
+    "pillow",
+    "pydub",
+    "moviepy",
+    "pyside6",
+    "olefile",
+    "defusedxml",
+    "pillow-heif"
+]
 
 [project.urls]
 "Homepage" = "https://github.com/YaronKoresh/aetherium-qcom"
