@@ -38,8 +38,10 @@ class ChatWindow(QMainWindow):
         self.user_id = None
         self.display_name = display_name
         self.dht_port, self.comm_port = dht_port, comm_port
-        self.profile_path = "profile.json"
-        
+
+        with cwd():
+            self.profile_path = os.path.realpath("../../../profile.json")
+
         # Managers are now imported from the core package
         self.crypto = CryptoManager()
         self.steganography = SteganographyManager()
@@ -750,7 +752,7 @@ def launch_gui(args):
     bootstrap_node = None
     # Use the cwd context manager to ensure the profile is found correctly
     with cwd():
-        profile_path = "profile.json"
+        profile_path = os.path.realpath("../../../profile.json")
         if not os.path.exists(profile_path):
             name, ok = QInputDialog.getText(None, "Welcome to Aetherium Q-Com", "Enter your desired display name:")
             if not (ok and name.strip()): 
