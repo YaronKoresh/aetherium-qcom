@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aetherium-qcom"
-version = "0.1.0"
+version = "0.5.0"
 authors = [
   { name="Yaron Koresh", email="aharonkoresh1@gmail.com" },
 ]
@@ -20,17 +20,18 @@ classifiers = [
     "Topic :: Security :: Cryptography",
 ]
 dependencies = [
-    "kademlia~=1.5",
+    "kademlia~=2.2",
     "cryptography~=44.0",
-    "pqcrypto~=0.1.2",
+    "pqcrypto~=0.3.4",
     "numpy~=1.26.4",
-    "pillow~=10.5",
+    "pillow~=10.4.0",
     "pydub~=0.25.1",
-    "moviepy~=1.0.3",
+    "moviepy~=2.2.1",
     "pyside6~=6.7",
     "olefile>=0.47",
-    "defusedxml~=0.8.0",
-    "pillow-heif~=0.16.0"
+    "defusedxml~=0.7.1",
+    "pillow-heif~=0.16.0",
+    "pystun3~=1.0.0"
 ]
 
 [project.urls]

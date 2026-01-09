@@ -40,12 +40,20 @@ class CodeHasher:
                 os.path.join(root,"pyproject.toml"),
                 os.path.join(root,"README.md"),
             ]
-            for sub_root in sub_roots:
-                for current_root, _, files in os.walk(os.path.join(root,sub_root)):
-                    for file in files:
-                        all_files.append(os.path.join(current_root, file))
 
-            # Sort the file paths to ensure a consistent hashing order every time
+            src_extensions = ('.py', '.qss')
+
+            for sub_root in sub_roots:
+                sub_root_path = os.path.join(root, sub_root)
+
+                for current_root, _, files in os.walk(sub_root_path):
+                    for file in files:
+                        if sub_root == "src":
+                            if file.endswith(src_extensions):
+                                all_files.append(os.path.join(current_root, file))
+                        else:
+                            all_files.append(os.path.join(current_root, file))
+
             for file_path in sorted(all_files):
                 with open(file_path, 'rb') as f:
                     hasher.update(f.read())

@@ -2,7 +2,8 @@
 import os
 import wave
 import tempfile
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from PIL import Image
 import numpy as np
 from pydub import AudioSegment
@@ -246,3 +247,116 @@ class SteganographyManager:
         except Exception as e:
             if 'temp_audio' in locals() and os.path.exists(temp_audio.name): os.remove(temp_audio.name)
             return None, f"Video extraction error: {e}"
+    
+    def embed_file(self, carrier_path, file_to_embed_path, password, output_path=None):
+        """
+        Embed a file inside a carrier media file (image/audio/video).
+        
+        This provides plausible deniability for file transfers by hiding the file
+        inside an innocuous-looking media file.
+        
+        Args:
+            carrier_path: Path to carrier media file (image, audio, or video)
+            file_to_embed_path: Path to file to embed
+            password: Password for encryption/obfuscation
+            output_path: Optional output path for the carrier with embedded data
+            
+        Returns:
+            Tuple of (output_path, error_message). output_path is None on error.
+        """
+        try:
+            # Read the file to embed
+            with open(file_to_embed_path, 'rb') as f:
+                file_data = f.read()
+            
+            # Create metadata header
+            filename = os.path.basename(file_to_embed_path)
+            file_size = len(file_data)
+            file_hash = hashlib.sha256(file_data).hexdigest()
+            
+            metadata = {
+                "filename": filename,
+                "size": file_size,
+                "hash": file_hash,
+                "timestamp": int(datetime.now(timezone.utc).timestamp())
+            }
+            
+            # Serialize metadata as JSON
+            metadata_json = json.dumps(metadata).encode('utf-8')
+            metadata_len = len(metadata_json)
+            
+            # Create data package: [metadata_length (4 bytes)][metadata][file_data]
+            data_package = metadata_len.to_bytes(4, 'big') + metadata_json + file_data
+            
+            # Embed the data package in the carrier
+            result_path, error = self.embed(carrier_path, data_package, password)
+            
+            if error:
+                return None, error
+            
+            # If output_path specified, move the result
+            if output_path and result_path != output_path:
+                os.rename(result_path, output_path)
+                return output_path, None
+            
+            return result_path, None
+            
+        except Exception as e:
+            return None, f"Error embedding file: {str(e)}"
+    
+    def extract_file(self, carrier_path, password, output_dir=None):
+        """
+        Extract an embedded file from a carrier media file.
+        
+        Args:
+            carrier_path: Path to carrier media file containing embedded data
+            password: Password for decryption/deobfuscation
+            output_dir: Optional output directory for extracted file
+            
+        Returns:
+            Tuple of (extracted_file_path, metadata, error_message).
+            extracted_file_path and metadata are None on error.
+        """
+        try:
+            # Extract data package from carrier
+            data_package, error = self.extract(carrier_path, password)
+            
+            if error:
+                return None, None, error
+            
+            if not data_package or len(data_package) < 4:
+                return None, None, "Invalid embedded data"
+            
+            # Parse metadata length
+            metadata_len = int.from_bytes(data_package[:4], 'big')
+            
+            if len(data_package) < 4 + metadata_len:
+                return None, None, "Corrupted embedded data"
+            
+            # Parse metadata
+            metadata_json = data_package[4:4+metadata_len]
+            metadata = json.loads(metadata_json.decode('utf-8'))
+            
+            # Extract file data
+            file_data = data_package[4+metadata_len:]
+            
+            # Verify file hash
+            file_hash = hashlib.sha256(file_data).hexdigest()
+            if file_hash != metadata.get("hash"):
+                return None, None, "File integrity check failed"
+            
+            # Determine output path
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                output_path = os.path.join(output_dir, metadata["filename"])
+            else:
+                output_path = os.path.join(tempfile.gettempdir(), metadata["filename"])
+            
+            # Write extracted file
+            with open(output_path, 'wb') as f:
+                f.write(file_data)
+            
+            return output_path, metadata, None
+            
+        except Exception as e:
+            return None, None, f"Error extracting file: {str(e)}"

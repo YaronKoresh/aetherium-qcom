@@ -1,5 +1,6 @@
 @echo off
 cd /d %~dp0
+if "%1"=="install_package_admin" goto install_package_as_admin
 
 echo Checking for prerequisites...
 
@@ -93,8 +94,8 @@ powershell -Command "(New-Object System.Net.WebClient).DownloadFile('%CLANG_INST
 if %errorlevel% neq 0 ( goto end_error )
 echo Starting Clang installation (this may take a few minutes)...
 setx /M LLVM_INSTALL_DIR "%ProgramFiles%\LLVM"
-start /wait %INSTALLER_PATH% /S /D="%LLVM_INSTALL_DIR%"
-setx /M PATH "%PATH%;%LLVM_INSTALL_DIR%\bin"
+start /wait %INSTALLER_PATH% /S /D="%ProgramFiles%\LLVM"
+setx /M PATH "%PATH%;%ProgramFiles%\LLVM\bin"
 del "%INSTALLER_PATH%"
 echo [SUCCESS] Clang C++ Compiler has been installed. Please re-run this script from a new command prompt.
 goto end_success

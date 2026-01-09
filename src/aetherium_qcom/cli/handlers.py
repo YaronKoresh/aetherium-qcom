@@ -69,8 +69,21 @@ def handle_invite(args):
 
     if args.invite_command == 'create':
         print(f"Creating invitation from {profile['display_name']}...")
-        dht_port, _ = get_free_ports(1)
-        invitation_data = crypto.create_invitation(profile['user_id'], profile['keys'], [('127.0.0.1', dht_port)])
+        dht_port, comm_port = get_free_ports(2)
+        
+        # Discover public IP for the invitation
+        from ..core.network import NATTraversal
+        print("Discovering public IP address...")
+        public_ip, public_port, nat_type = NATTraversal.discover_public_address(comm_port)
+        
+        if public_ip and public_port:
+            print(f"Public address discovered: {public_ip}:{public_port} (NAT Type: {nat_type})")
+            bootstrap_address = (public_ip, public_port)
+        else:
+            print("Warning: Could not discover public IP. Using localhost (this invitation may only work locally).")
+            bootstrap_address = ('127.0.0.1', comm_port)
+        
+        invitation_data = crypto.create_invitation(profile['user_id'], profile['keys'], [bootstrap_address])
         invitation_bytes = json.dumps(invitation_data, sort_keys=True).encode()
         
         output_path, error = stego.embed(args.media, invitation_bytes, args.password)
