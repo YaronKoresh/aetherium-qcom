@@ -11,7 +11,7 @@ authors = [
 description = "Aetherium Q-Com is a decentralized, untraceable, and unblockable communication platform engineered for truly private, censorship-resistant messaging."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
